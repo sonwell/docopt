@@ -46,7 +46,7 @@ if __name__ == '__main__':
 Beat that! The option parser is generated based on the docstring above that is
 passed to `docopt` function.  `docopt` parses the usage pattern
 (`"Usage: ..."`) and option descriptions (lines starting with dash "`-`") and
-ensures that the program invocation matches the ussage pattern; it parses
+ensures that the program invocation matches the usage pattern; it parses
 options, arguments and commands based on that. The basic idea is that
 *a good help message has all necessary information in it to make a parser*.
 
@@ -239,14 +239,16 @@ Use the following constructs to specify patterns:
 If your usage patterns allow to match the same-named argument several times,
 parser will put the matched values into a list, e.g. in case the pattern is
 `my-program.py FILE FILE` then `args['FILE']` will be a list; in case the
-pattern is `my-program.py FILE...` it will also be a list.
+pattern is `my-program.py FILE...` it will also be a list. Note, even if
+there is another pattern `my-program.py --foo FILE` with only one argument,
+the return value will still be a list.
 
 
 Option descriptions format
 -------------------------------------------------------------------------------
 
 **Option descriptions** consist of a list of options that you put below your
-ussage patterns.
+usage patterns.
 
 It is necessary to list option descriptions in order to specify:
 

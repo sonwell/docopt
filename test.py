@@ -198,13 +198,13 @@ if __name__ == '__main__':
 
     d = \
     """
-    a C ...
+    a C ... D
     a B C D D ...
     a B D
     a B <E>
     """
 
-    print match(d, 'a C C C C C C C C C C C')
+    print match(d, 'a C C C C C C C C C C C D')
     print match(d, 'a C B D')
     print match(d, 'a B <E>')
     print match(d, 'a B C D D')

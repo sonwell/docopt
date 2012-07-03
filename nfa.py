@@ -48,15 +48,11 @@ class Epsilon(object):
         return None
 
     def __repr__(self):
-#        if self.reprd:
-#            return '...'
-#        self.reprd = True
         next = ''.join(str(self.next)[1:-1].split(','))
         children = '\n  '.join(next.split('\n')[:-1])
         repl = "<%s(%r)->%r @ %x>:\n  %s" % \
             (self.__class__.__name__, self.name, self.value,
              id(self.value), children)
-#        self.reprd = False
         return repl
 
 
@@ -114,7 +110,7 @@ class Graph(Node):
         tail = self.start.extend(tokens, parents)
         if self not in tail.next:
             tail.next.append(self)
-#        tail.next.append(Epsilon())
+        tail.next.append(Epsilon())
         parents.pop(0)
         return self.end
 
@@ -131,16 +127,16 @@ class Graph(Node):
             return self.start.match(tokens, parents)
 
     def __repr__(self):
-#        if self.reprd:
-#            return '...'
-#        self.reprd = True
         start = str(self.start).strip().split('\n  ')
         end = str(self.end).split('\n  ')
         repl = "<%s(%s)->%r @ %x>:\n  %s\n  %s\n" % \
             (self.__class__.__name__, self.name, self.value,
              id(self.value), '\n   |'.join(start), '\n    '.join(end))
-#        self.reprd = False
         return repl
+
+
+class Argument(Node):
+    pass
 
 
 class Command(Graph):
@@ -184,13 +180,18 @@ class Command(Graph):
             return None
 
 
-A = Command('rm')
-A.extend('rm C C'.split(), [])
-A.extend('rm C B'.split(), [])
+class Option(Graph):
+    pass
 
-B = Command('sudo')
-A.next.append(B)
-B.start.next.append(A)
 
-print str(B).strip()
-print B.match(['sudo', 'rm', 'B', 'C'], [])
+if __name__ == '__main__':
+    import sys
+    A = Command('rm')
+    A.extend('rm C C'.split(), [])
+    A.extend('rm C B'.split(), [])
+
+    B = Command('sudo')
+    A.next.append(B)
+    B.start.next.append(A)
+
+    print B.match(sys.argv[1:], [])

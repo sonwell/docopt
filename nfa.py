@@ -7,8 +7,88 @@
 #   o [ foo ]
 #   o ( bar )
 #   o foo | bar
-# 2. construct something like TokenStream
-# 3. generate patterns from docstring
+# 2. generate patterns from docstring
+
+class TokenStream(list):
+
+    def __init__(self, stream):
+        if type(stream) is list:
+            list.__init__(self, stream)
+            self.stream = ''
+        else:
+            list.__init__(self)
+            self.stream = stream.strip()
+        self.scopes = []
+
+    def __getitem__(self, key):
+        if key >= len(self):
+            for i in xrange(key - len(self) + 1):
+                self.append(self.pop(0)) 
+        return list.__getitem__(self, key)
+
+    def enter(self, parent):
+        self.scopes.insert(0, parent)
+        return self
+
+    def exit(self):
+        self.scopes.pop(0)
+        return self
+
+    def multichar(self, stream):
+        l, i = len(stream), 0
+        if stream[0] == '.':
+            while i < l and i < 3 and stream[i] == '.':
+                i += 1
+            token, stream = stream[:i], stream[i:]
+            self.append(token)
+            return stream
+        while i < l and stream[i].lstrip():
+            if stream[i] in '[]()|' or stream[i:i + 3] == '...':
+                break
+            if stream[i] == '=':
+                stream = stream[:i] + stream[i+1:]
+                break
+            i += 1
+        token, stream = stream[:i], stream[i:]
+        self.append(token)
+        return stream
+
+    def pop(self, index=0):
+        stream = self.stream
+        if len(self) > index:
+            return list.pop(self, index)
+        elif stream:
+            stream = stream.lstrip()
+            l = len(stream)
+            if stream[0] in '[]()|':
+                self.append(stream[0])
+                self.stream = stream[1:]
+            elif stream[0] == '-':
+                if l == 1 or stream[1].lstrip():
+                    self.append('-')
+                    self.stream = stream[1:]
+                    return self.pop(index)
+
+                if stream[1] == '-':
+                    self.stream = self.multichar(stream)
+                else:
+                    token = stream[:2]
+                    symbol = self.scopes[0].get(token)
+                    self.append(token)
+                    if len(symbol.args) == 0:
+                        if l < 3:
+                            self.stream = ''
+                        elif stream[2] in '[]()|-.':
+                            self.stream = stream[2:]
+                        elif ord(stream[2]) <= 32:
+                            self.stream = stream[2:]
+                        else:
+                            self.stream = '-' + stream[2:]
+            else:
+                self.stream = self.multichar(stream)
+        else:
+            self.append(None)
+        return self.pop(index)
 
 
 class NodeValue(object):
@@ -42,19 +122,19 @@ class Node(object):
         return other
 
     def extend(self, tokens, parents):
-        if not tokens:
+        name = tokens[0]
+        if name is None:
             return self
         for node in self.next:
             res = node.extend(tokens, parents)
             if res is not None:
                 return res
-        name = tokens[0]
         new = parents[0].get(name)
         self.next.append(new)
         return new.extend(tokens, parents)
 
     def match(self, tokens, parents):
-        if not tokens and not self.next:
+        if tokens[0] is None and not self.next:
             return {}
         for node in self.next:
             res = node.match(tokens, parents)
@@ -95,7 +175,6 @@ class Graph(Node):
         tail = self.internal.extend(tokens, parents)
         if self not in tail.next:
             tail.next.append(self)
-        tail.next.append(Node())
         parents.pop(0)
         return self
 
@@ -121,17 +200,18 @@ class Graph(Node):
 
     def match(self, tokens, parents):
         if parents and parents[0] is self:  # we've been here before...
+            tokens.exit()
             return self.exit(tokens, parents)
         else:
+            tokens.enter(self)
             return self.entry(tokens, parents)
 
 
 class Argument(Node):
 
     def extend(self, tokens, parents):
-        try:
-            tok = tokens.pop(0)
-        except:
+        tok = tokens.pop(0)
+        if tok is None:
             return self
         if self.name != tok:
             tokens.insert(0, tok)
@@ -139,9 +219,8 @@ class Argument(Node):
         return Node.extend(self, tokens, parents)
 
     def match(self, tokens, parents):
-        try:
-            tok = tokens.pop(0)
-        except:
+        tok = tokens.pop(0)
+        if tok is None:
             return None
         res = Node.match(self, tokens, parents)
         if res is not None:
@@ -167,9 +246,8 @@ class Option(Graph):
         return Graph.copy(self, other)
 
     def extend(self, tokens, parents):
-        try:
-            tok = tokens.pop(0)
-        except:
+        tok = tokens.pop(0)
+        if tok is None:
             return self
         if self != tok:
             tokens.insert(0, tok)
@@ -219,9 +297,8 @@ class Command(Option):
         return Graph.copy(self, other)
 
     def extend(self, tokens, parents):
-        try:
-            tok = tokens.pop(0)
-        except:
+        tok = tokens.pop(0)
+        if tok is None:
             return self
         if self != tok:
             tokens.insert(0, tok)
@@ -240,7 +317,10 @@ class Command(Option):
 if __name__ == '__main__':
     import sys
     A = Command('sudo')
-    A.extend('sudo rm C B -v'.split(), [])
-    A.extend('sudo rm C -v'.split(), [])
+    for line in ('sudo rm C B --v', 'sudo rm C -v'):
+        ts = TokenStream(line)
+        ts.enter(A)
+        A.extend(ts, [])
+        ts.exit()
 
-    print A.match(sys.argv[1:], [])
+    print A.match(TokenStream(sys.argv[1:]), [])

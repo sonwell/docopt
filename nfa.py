@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 
-"""
-TODO:
-    1. Graph.get chooses the correct type e.g. Command, Option, Argument
-    2. Options
-"""
+
+# TODO:
+# 1. special symbols
+#   o ...
+#   o [ foo ]
+#   o ( bar )
+#   o foo | bar
+# 2. construct something like TokenStream
+# 3. generate patterns from docstring
+
 
 class NodeValue(object):
 
@@ -26,22 +31,24 @@ class NodeValue(object):
 class Node(object):
 
     def __init__(self, name=None):
-        self.reprd = False
         self.name = name
         self.next = []
         self.value = NodeValue()
 
-    def push(self, other):
-        self.value.push(other)
+    def copy(self, other=None):
+        if other is None:
+            other = self.__class__(self.name)
+        other.value = self.value
+        return other
 
     def extend(self, tokens, parents):
         if not tokens:
             return self
-        name = tokens[0]
         for node in self.next:
             res = node.extend(tokens, parents)
             if res is not None:
                 return res
+        name = tokens[0]
         new = parents[0].get(name)
         self.next.append(new)
         return new.extend(tokens, parents)
@@ -55,14 +62,6 @@ class Node(object):
                 return res
         return None
 
-    def __repr__(self):
-        next = ''.join(str(self.next)[1:-1].split(','))
-        children = '\n  '.join(next.split('\n')[:-1])
-        repl = "<%s(%r)->%r @ %x>:\n  %s" % \
-            (self.__class__.__name__, self.name, self.value,
-             id(self.value), children)
-        return repl
-
 
 class Graph(Node):
 
@@ -72,17 +71,17 @@ class Graph(Node):
         self.internal = Node()
         self.result = []
 
+    def copy(self, other=None):
+        if other is None:
+            other = self.__class__(self.name, self)
+        return Node.copy(self, other)
+
     def get(self, symbol):
         if symbol in self.symbols:
             old = self.symbols[symbol]
-            new = old.__class__(symbol)
-            new.value = old.value
-            return new
+            return old.copy()
         if symbol.startswith('-'):
-            if symbol[1] == '-':
-                new = Option(None, symbol, [])
-            else:
-                new = Option(symbol, None, [])
+            new = Option(symbol, [])
         elif symbol.isupper() or \
            (symbol[0] == '<' and symbol[-1] == '>'):
             new = Argument(symbol)
@@ -126,14 +125,6 @@ class Graph(Node):
         else:
             return self.entry(tokens, parents)
 
-    def __repr__(self):
-        start = str(self.internal).strip().split('\n  ')
-        end = (Node.__repr__(self)).split('\n  ')
-        repl = "<%s(%s)->%r @ %x>:\n  %s\n  %s\n" % \
-            (self.__class__.__name__, self.name, self.value,
-             id(self.value), '\n   |'.join(start), '\n    '.join(end))
-        return repl
-
 
 class Argument(Node):
 
@@ -154,7 +145,7 @@ class Argument(Node):
             return None
         res = Node.match(self, tokens, parents)
         if res is not None:
-            self.push(tok)
+            self.value.push(tok)
             res[self.name] = self.value
             return res
         tokens.insert(0, tok)
@@ -163,21 +154,24 @@ class Argument(Node):
 
 class Option(Graph):
 
-    def __init__(self, short, long, args):
-        Graph.__init__(self, long or short)
-        self.long = long
-        self.short = short
-        self.args = args
+    def __init__(self, name, args=None):
+        Graph.__init__(self, name)
+        self.args = args or []
 
     def  __ne__(self, token):
-        return token not in (self.short, self.long)
+        return token != self.name
+
+    def copy(self, other=None):
+        if other is None:
+            other = self.__class__(self.name, self.args)
+        return Graph.copy(self, other)
 
     def extend(self, tokens, parents):
         try:
             tok = tokens.pop(0)
         except:
             return self
-        if tok not in (self.long, self.short):
+        if self != tok:
             tokens.insert(0, tok)
             return None
         tail = self.internal
@@ -219,6 +213,11 @@ class Command(Option):
     def __ne__(self, token):
         return self.name != token
 
+    def copy(self, other=None):
+        if other is None:
+            other = self.__class__(self.name)
+        return Graph.copy(self, other)
+
     def extend(self, tokens, parents):
         try:
             tok = tokens.pop(0)
@@ -242,5 +241,6 @@ if __name__ == '__main__':
     import sys
     A = Command('sudo')
     A.extend('sudo rm C B -v'.split(), [])
+    A.extend('sudo rm C -v'.split(), [])
 
     print A.match(sys.argv[1:], [])

@@ -56,7 +56,16 @@ class TokenStream(list):
     def pop(self, index=0):
         stream = self.stream
         if len(self) > index:
-            return list.pop(self, index)
+            tok = list.pop(self, index)
+            if tok and len(tok) > 2 and tok[0] == '-':
+                if tok[1] != '-':
+                    symbol = self.scopes[0].get(tok[:2])
+                    if len(symbol.args) > 0:
+                        self.insert(0, tok[2:])
+                    else:
+                        self.insert(0, '-' + tok[2:])
+                    tok = tok[:2]
+            return tok
         elif stream:
             stream = stream.lstrip()
             l = len(stream)
@@ -258,7 +267,7 @@ class Option(Graph):
             tail.next.append(new)
             tail = new
         tail.next.append(self)
-        return self
+        return Node.extend(self, tokens, parents)
 
     def exit(self, tokens, parents):
         parents.pop(0)
@@ -317,7 +326,7 @@ class Command(Option):
 if __name__ == '__main__':
     import sys
     A = Command('sudo')
-    for line in ('sudo rm C B --v', 'sudo rm C -v'):
+    for line in ('sudo rm C B --v', 'sudo rm C -vc'):
         ts = TokenStream(line)
         ts.enter(A)
         A.extend(ts, [])

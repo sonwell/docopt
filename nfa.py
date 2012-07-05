@@ -64,7 +64,7 @@ class TokenStream(list):
                 self.append(stream[0])
                 self.stream = stream[1:]
             elif stream[0] == '-':
-                if l == 1 or stream[1].lstrip():
+                if l == 1 or not stream[1].lstrip():
                     self.append('-')
                     self.stream = stream[1:]
                     return self.pop(index)

@@ -65,6 +65,11 @@ class TokenStream(list):
                     else:
                         self.insert(0, '-' + tok[2:])
                     tok = tok[:2]
+                else:
+                    pos = tok.find('=')
+                    if pos > 2:
+                        self.insert(0, tok[pos+1:])
+                        tok = tok[:pos]
             return tok
         elif stream:
             stream = stream.lstrip()

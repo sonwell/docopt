@@ -1,30 +1,26 @@
 #!/usr/bin/env python
 
-
-# TODO:
-# 1. special symbols
-#   o ...
-#   o [ foo ]
-#   o ( bar )
-#   o foo | bar
-# 2. generate patterns from docstring
-
 class TokenStream(list):
 
-    def __init__(self, stream):
+    def __init__(self, stream, parse_equals=True):
         if type(stream) is list:
             list.__init__(self, stream)
             self.stream = ''
         else:
-            list.__init__(self)
-            self.stream = stream.strip()
+            for sub in tuple('[]()|') + ('...',):
+                stream = stream.replace(sub, ' %s ' % sub)
+            list.__init__(self, stream.split())
+        self.parsed = []
         self.scopes = []
+        self.parse_equals = parse_equals
 
     def __getitem__(self, key):
-        if key >= len(self):
-            for i in xrange(key - len(self) + 1):
-                self.append(self.pop(0)) 
-        return list.__getitem__(self, key)
+        while len(self.parsed) <= key:
+            self.parsed.append(self.parse())
+        return self.parsed[key]
+   
+    def __repr__(self):
+        return repr(self.parsed) + ' ' + list.__repr__(self)
 
     def enter(self, parent):
         self.scopes.insert(0, parent)
@@ -34,81 +30,40 @@ class TokenStream(list):
         self.scopes.pop(0)
         return self
 
-    def multichar(self, stream):
-        l, i = len(stream), 0
-        if stream[0] == '.':
-            while i < l and i < 3 and stream[i] == '.':
-                i += 1
-            token, stream = stream[:i], stream[i:]
-            self.append(token)
-            return stream
-        while i < l and stream[i].lstrip():
-            if stream[i] in '[]()|' or stream[i:i + 3] == '...':
-                break
-            if stream[i] == '=':
-                stream = stream[:i] + stream[i+1:]
-                break
-            i += 1
-        token, stream = stream[:i], stream[i:]
-        self.append(token)
-        return stream
+    def push(self, other):
+        self.parsed.insert(0, other)
 
-    def pop(self, index=0):
-        stream = self.stream
-        if len(self) > index:
-            tok = list.pop(self, index)
-            if tok and len(tok) > 2 and tok[0] == '-':
-                if tok[1] != '-':
-                    symbol = self.scopes[0].get(tok[:2])
-                    if len(symbol.args) > 0:
-                        self.insert(0, tok[2:])
-                    else:
-                        self.insert(0, '-' + tok[2:])
-                    tok = tok[:2]
-                else:
-                    pos = tok.find('=')
-                    if pos > 2:
-                        self.insert(0, tok[pos+1:])
-                        tok = tok[:pos]
+    def pop(self):
+        if len(self.parsed) > 0:
+            return self.parsed.pop(0)
+        return self.parse()
+
+    def parse(self):
+        if len(self) == 0:
+            return None
+        tok = list.pop(self, 0)
+        if len(tok) <= 2 or tok[0] != '-':
             return tok
-        elif stream:
-            stream = stream.lstrip()
-            l = len(stream)
-            if stream[0] in '[]()|':
-                self.append(stream[0])
-                self.stream = stream[1:]
-            elif stream[0] == '-':
-                if l == 1 or not stream[1].lstrip():
-                    self.append('-')
-                    self.stream = stream[1:]
-                    return self.pop(index)
-
-                if stream[1] == '-':
-                    self.stream = self.multichar(stream)
-                else:
-                    token = stream[:2]
-                    symbol = self.scopes[0].get(token)
-                    self.append(token)
-                    if len(symbol.args) == 0:
-                        if l < 3:
-                            self.stream = ''
-                        elif stream[2] in '[]()|-.':
-                            self.stream = stream[2:]
-                        elif ord(stream[2]) <= 32:
-                            self.stream = stream[2:]
-                        else:
-                            self.stream = '-' + stream[2:]
+        if tok[1] != '-':
+            symbol = self.scopes[0].get(tok[:2])
+            if len(symbol.args) > 0:
+                self.insert(0, tok[2:])
             else:
-                self.stream = self.multichar(stream)
-        else:
-            self.append(None)
-        return self.pop(index)
+                self.insert(0, '-' + tok[2:])
+            tok = tok[:2]
+        elif len(tok) > 3:
+            pos = tok.find('=')
+            if pos > 2:
+                tok, arg = tok[:pos], tok[pos+1:]
+                self.insert(0, arg)
+        return tok
 
 
 class NodeValue(object):
 
-    def __init__(self):
+    def __init__(self, default=None):
         self.value = None
+        self.default = default
 
     def push(self, value):
         if self.value is None:
@@ -119,7 +74,7 @@ class NodeValue(object):
             self.value = [value, self.value]
 
     def __repr__(self):
-        return repr(self.value)
+        return repr(self.value or self.default)
 
 
 class Node(object):
@@ -129,23 +84,55 @@ class Node(object):
         self.next = []
         self.value = NodeValue()
 
+    def __repr__(self):
+        return repr(self.name) + ', ' + repr(self.next)
+
     def copy(self, other=None):
         if other is None:
             other = self.__class__(self.name)
         other.value = self.value
         return other
 
-    def extend(self, tokens, parents):
+    def extend(self, tokens, parents, last):
         name = tokens[0]
-        if name is None:
+        if name is None or name in '|)]':
             return self
+        if name == '...':
+            for node in self.next:
+                if node.name == self.name:
+                    return node.extend(tokens, parents, last)
+            tokens.pop()
+            new = last.copy()
+            join = Node()
+            self.next.append(new)
+            self.next.append(join)
+            new.next.append(new)
+            new.next.append(join)
+            return join.extend(tokens, parents, new)
+        if name in '([':
+            tokens.pop()
+            new = Graph()
+            new.symbols = parents[0].symbols
+            new.extend(tokens, parents, last)
+            tok = tokens.pop()
+            while tok == '|':
+                new.extend(tokens)
+                tok = tokens.pop()
+            if (name == '(' and tok != ')') or (name == '[' and tok != ']'):
+                raise ValueError('Unmatched closing bracket or paren')
+            self.next.append(new)
+            join = Node()
+            new.next.append(join)
+            if name == '[':
+                self.next.append(join)
+            return join.extend(tokens, parents, new)
         for node in self.next:
-            res = node.extend(tokens, parents)
+            res = node.extend(tokens, parents, last)
             if res is not None:
                 return res
         new = parents[0].get(name)
         self.next.append(new)
-        return new.extend(tokens, parents)
+        return new.extend(tokens, parents, last)
 
     def match(self, tokens, parents):
         if tokens[0] is None and not self.next:
@@ -165,9 +152,13 @@ class Graph(Node):
         self.internal = Node()
         self.result = []
 
+    def __repr__(self):
+        return repr(self.name) + ', (' + repr(self.internal) + ') ' + repr(self.next)
+
     def copy(self, other=None):
         if other is None:
             other = self.__class__(self.name, self)
+        other.internal = self.internal
         return Node.copy(self, other)
 
     def get(self, symbol):
@@ -176,17 +167,16 @@ class Graph(Node):
             return old.copy()
         if symbol.startswith('-'):
             new = Option(symbol, [])
-        elif symbol.isupper() or \
-           (symbol[0] == '<' and symbol[-1] == '>'):
+        elif symbol.isupper() or (symbol[0] == '<' and symbol[-1] == '>'):
             new = Argument(symbol)
         else:
             new = Command(symbol)
         self.symbols[symbol] = new
         return new
 
-    def extend(self, tokens, parents):
+    def extend(self, tokens, parents, last):
         parents.insert(0, self)
-        tail = self.internal.extend(tokens, parents)
+        tail = self.internal.extend(tokens, parents, self)
         if self not in tail.next:
             tail.next.append(self)
         parents.pop(0)
@@ -202,20 +192,26 @@ class Graph(Node):
         
     def entry(self, tokens, parents):
         if self.name:
-            try:
-                tok = tokens.pop(0)
-            except:
+            tok = tokens.pop()
+            if tok is None:
                 return None
             if self != tok:
-                tokens.insert(0, tok)
+                tokens.push(tok)
                 return None
         parents.insert(0, self)
-        return self.internal.match(tokens, parents)
+        res = self.internal.match(tokens, parents)
+        if res is None:
+            parents.pop(0)
+            return None
+        return res
 
     def match(self, tokens, parents):
         if parents and parents[0] is self:  # we've been here before...
             tokens.exit()
-            return self.exit(tokens, parents)
+            res = self.exit(tokens, parents)
+            if res is None:
+                tokens.enter(self)
+            return res
         else:
             tokens.enter(self)
             return self.entry(tokens, parents)
@@ -223,17 +219,17 @@ class Graph(Node):
 
 class Argument(Node):
 
-    def extend(self, tokens, parents):
-        tok = tokens.pop(0)
+    def extend(self, tokens, parents, last):
+        tok = tokens.pop()
         if tok is None:
             return self
         if self.name != tok:
-            tokens.insert(0, tok)
+            tokens.push(tok)
             return None
-        return Node.extend(self, tokens, parents)
+        return Node.extend(self, tokens, parents, self)
 
     def match(self, tokens, parents):
-        tok = tokens.pop(0)
+        tok = tokens.pop()
         if tok is None:
             return None
         res = Node.match(self, tokens, parents)
@@ -241,7 +237,7 @@ class Argument(Node):
             self.value.push(tok)
             res[self.name] = self.value
             return res
-        tokens.insert(0, tok)
+        tokens.push(tok)
         return None
 
 
@@ -249,7 +245,7 @@ class Option(Graph):
 
     def __init__(self, name, args=None):
         Graph.__init__(self, name)
-        self.args = args or []
+        self.args = args if args is not None else []
 
     def  __ne__(self, token):
         return token != self.name
@@ -259,12 +255,12 @@ class Option(Graph):
             other = self.__class__(self.name, self.args)
         return Graph.copy(self, other)
 
-    def extend(self, tokens, parents):
-        tok = tokens.pop(0)
+    def extend(self, tokens, parents, last):
+        tok = tokens.pop()
         if tok is None:
             return self
         if self != tok:
-            tokens.insert(0, tok)
+            tokens.push(tok)
             return None
         tail = self.internal
         for arg in self.args:
@@ -272,7 +268,7 @@ class Option(Graph):
             tail.next.append(new)
             tail = new
         tail.next.append(self)
-        return Node.extend(self, tokens, parents)
+        return Node.extend(self, tokens, parents, self)
 
     def exit(self, tokens, parents):
         parents.pop(0)
@@ -302,22 +298,19 @@ class Command(Option):
     def __init__(self, name):
         Graph.__init__(self, name, None)
 
-    def __ne__(self, token):
-        return self.name != token
-
     def copy(self, other=None):
         if other is None:
             other = self.__class__(self.name)
         return Graph.copy(self, other)
 
-    def extend(self, tokens, parents):
-        tok = tokens.pop(0)
+    def extend(self, tokens, parents, last):
+        tok = tokens.pop()
         if tok is None:
             return self
         if self != tok:
-            tokens.insert(0, tok)
+            tokens.push(tok)
             return None
-        return Graph.extend(self, tokens, parents)
+        return Graph.extend(self, tokens, parents, self)
 
     def entry(self, tokens, parents):
         res = Graph.entry(self, tokens, parents)
@@ -331,10 +324,10 @@ class Command(Option):
 if __name__ == '__main__':
     import sys
     A = Command('sudo')
-    for line in ('sudo rm C B --v', 'sudo rm C -vc'):
+    for line in ('sudo (add C B ...) --v', 'sudo (rm [C]) -vc'):
         ts = TokenStream(line)
         ts.enter(A)
-        A.extend(ts, [])
+        A.extend(ts, [], None)
         ts.exit()
 
-    print A.match(TokenStream(sys.argv[1:]), [])
+    print A.match(TokenStream(sys.argv[1:], False), [])

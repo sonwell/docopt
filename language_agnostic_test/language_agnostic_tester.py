@@ -587,10 +587,171 @@ r"""usage: prog [-opr]
 $ prog -op
 {"-o": true, "-p": true, "-r": false}
 
+
+r"""usage: prog --aabb | --aa
+
+"""
+$ prog --aa
+{"--aabb": false, "--aa": true}
+
+$ prog --a
+"user-error"  # not a unique prefix
+
+#
+# test_bug_option_argument_should_not_capture_default_value_from_pattern
+#
+
+r"""usage: prog [--file=<f>]
+
+"""
+$ prog
+{"--file": null}
+
+
+r"""usage: prog [--file=<f>]
+
+--file <a>
+
+"""
+{"--file": null}
+
+
+r"""Usage: tau [-a <host:port>]
+
+-a, --address <host:port>  TCP address [default: localhost:6283].
+
+"""
+$ prog
+{"--address": "localhost:6283"}
+
+#
+# Counting number of flags
+#
+
+r"""Usage: prog -v
+
+"""
+$ prog -v
+{"-v": true}
+
+
+r"""Usage: prog [-v -v]
+
+"""
+$ prog
+{"-v": 0}
+
+$ prog -v
+{"-v": 1}
+
+$ prog -vv
+{"-v": 2}
+
+
+r"""Usage: prog -v ...
+
+"""
+$ prog
+"user-error"
+
+$ prog -v
+{"-v": 1}
+
+$ prog -vv
+{"-v": 2}
+
+$ prog -vvvvvv
+{"-v": 6}
+
+
+r"""Usage: prog [-v | -vv | -vvv]
+
+This one is probably most readable user-friednly variant.
+
+"""
+$ prog
+{"-v": 0}
+
+$ prog -v
+{"-v": 1}
+
+$ prog -vv
+{"-v": 2}
+
+$ prog -vvvv
+"user-error"
+
+
+r"""usage: prog [--ver --ver]
+
+"""
+$ prog --ver --ver
+{"--ver": 2}
+
+
+#
+# Counting commands
+#
+
+r"""usage: prog [go]
+
+"""
+$ prog go
+{"go": true}
+
+
+r"""usage: prog [go go]
+
+"""
+$ prog
+{"go": 0}
+
+$ prog go
+{"go": 1}
+
+$ prog go go
+{"go": 2}
+
+$ prog go go go
+"user-error"
+
+r"""usage: prog go...
+
+"""
+$ prog go go go go go
+{"go": 5}
+
+
+#
+# test_accumulate_multiple_options
+#
+
+r"""usage: prog --long=<arg> ...
+
+"""
+$ prog --long one
+{"--long": ["one"]}
+
+$ prog --long one --long two
+{"--long": ["one", "two"]}
+
+
+#
+# test_multiple_different_elements
+#
+
+r"""usage: prog (go <direction> --speed=<km/h>)...
+
+"""
+$ prog go left --speed=5  go right --speed=9
+{"go": 2, "<direction>": ["left", "right"], "--speed": ["5", "9"]}
+
 '''
-import sys, json
+import sys, json, re
 from subprocess import Popen, PIPE, STDOUT
 
+# remove comments
+__doc__ = re.sub('#.*$', '', __doc__, flags=re.M)
 
 testee = (sys.argv[1] if len(sys.argv) >= 2 else
         exit('Usage: language_agnostic_tester.py ./path/to/executable/testee [ID ...]'))

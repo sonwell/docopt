@@ -1,10 +1,10 @@
 `docopt` creates *beautiful* command-line interfaces
 ===============================================================================
 
-> New in version 0.4.0:
+> New in version 0.5.0:
 >
->    - option descriptions become optional,
->    - support for "`--`" and "`-`" commands.
+> Repeatable flags and commands are counted if repeated (a-la ssh `-vvv`).
+> Repeatable options with arguments are accumulated into list.
 
 Isn't it awesome how `optparse` and `argparse` generate help messages
 based on your code?!
@@ -158,8 +158,6 @@ Help message consists of 2 parts:
         --verbose    print more text
 
 Their format is described below; other text is ignored.
-Also, take a look at the
-[beautiful examples](https://github.com/docopt/docopt/tree/master/examples>).
 
 Usage pattern format
 -------------------------------------------------------------------------------
@@ -214,8 +212,8 @@ Use the following constructs to specify patterns:
   e.g.: `my_program.py --path=<path> <file>...` is the same as
   `my_program.py (--path=<path> <file>...)`.
   (Note, "required options" might be not a good idea for your users).
-- **|** (pipe) **mutualy exclussive** elements. Group them using **( )** if
-  one of the mutually exclussive elements is required:
+- **|** (pipe) **mutualy exclusive** elements. Group them using **( )** if
+  one of the mutually exclusive elements is required:
   `my_program.py (--clockwise | --counter-clockwise) TIME`. Group them using
   **[ ]** if none of the mutually-exclusive elements are required:
   `my_program.py [--left | --right]`.
@@ -236,12 +234,23 @@ Use the following constructs to specify patterns:
   `stdin` is used instead of a file. To support this add "`[-]`" to
   you usage patterns. "`-`" act as a normal command.
 
-If your usage patterns allow to match the same-named argument several times,
-parser will put the matched values into a list, e.g. in case the pattern is
-`my-program.py FILE FILE` then `args['FILE']` will be a list; in case the
-pattern is `my-program.py FILE...` it will also be a list. Note, even if
-there is another pattern `my-program.py --foo FILE` with only one argument,
-the return value will still be a list.
+If your pattern allows to match argument-less option (a flag) several times:
+
+    Usage: my_program.py [-v | -vv | -vvv]
+
+then number of occurences of the option will be counted. I.e. `args['-v']`
+will be `2` if program was invoked as `my_program -vv`. Same works for
+commands.
+
+If your usage patterns allows to match same-named option with argument
+or positional argument several times, the matched arguments will be
+collected into a list:
+
+    Usage: my_program.py <file> <file> --path=<path>...
+
+I.e. invoked with `my_program.py file1 file2 --path=./here --path=./there`
+the returned dict will contain `args['<file>'] == ['file1', 'file2']` and
+`args['--path'] == ['./here', './there']`.
 
 
 Option descriptions format
@@ -290,6 +299,25 @@ The rules are as follows:
         --output=FILE    Output file [default: test.txt]
         --directory=DIR  Some directory [default: ./]
 
+Examples
+-------------------------------------------------------------------------------
+
+We have an extensive list of
+[examples](https://github.com/docopt/docopt/tree/master/examples)
+which cover every aspect of functionality of `docopt`.  Try them out,
+read the source if in doubt.
+
+Data validation
+-------------------------------------------------------------------------------
+
+`docopt` does one thing and does it well: it implements your command-line
+interface.  However it does not validate the input data.  On the other hand
+there are libraries like
+[python schema](https://github.com/halst/schema)
+which make validating data a breeze.  Take a look at
+[validation_example.py](https://github.com/docopt/docopt/tree/master/examples/validation_example.py)
+which uses **schema** to validate data and report an error to the user.
+
 Development
 ===============================================================================
 
@@ -307,7 +335,8 @@ community!
 
 Help develop [Ruby port](http://github.com/docopt/docopt.rb),
 [CoffeeScript port](http://github.com/docopt/docopt.coffee),
-[Lua port](http://github.com/docopt/docopt.lua) or
+[Lua port](http://github.com/docopt/docopt.lua),
+[PHP port](http://github.com/docopt/docopt.php) or
 create a port for your favorite language! You are encouraged to use the
 Python version as a reference implementation. A Language-agnostic test suite
 is bundled with [Python implementation](http://github.com/docopt/docopt>).
@@ -323,8 +352,10 @@ Changelog
 release with stable API will be 1.0 (soon).  Until then, you are encouraged
 to specify explicitly the version in your dependency tools, e.g.:
 
-    pip install docopt==0.4.0
+    pip install docopt==0.5.0
 
+- 0.5.0 Repeated options/commands are counted or accumulated into list.
+- 0.4.2 Bugfix release.
 - 0.4.0 Option descriptions become optional,
   support for "`--`" and "`-`" commands.
 - 0.3.0 Support for (sub)commands like `git remote add`.

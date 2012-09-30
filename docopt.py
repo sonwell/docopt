@@ -1,453 +1,259 @@
-import sys
-import re
+#!/usr/bin/env python
+# -*- encoding: utf-8 -*-
+from operator import attrgetter
+
+'''
+Weighting nodes achieves the same effect as Pattern.either in the old versions,
+without resorting to determining types, etc. Lighter nodes will be tested first
+when we run through the NFA.
+
+Weight classes:
+ ^          0    -- We should never match against '^'.
+ Command    1
+ Option(s)  1
+ Argument   2
+ $          0    -- I think it's cheap to check if we're at the end, and
+                    will avoid a problem with infinite loops via '...'.
+'''
+
+def debug_msg(*msg):
+    if len(msg) == 1:
+        msg = msg[0]
+    if DEBUG:
+        sys.stderr.write(str(msg) + '\n')
 
 
-class DocoptLanguageError(Exception):
+class orderedset(list):
 
-    """Error in construction of usage-message by developer."""
+    def __init__(self, vals=None):
+        list.__init__(self)
+        if vals is not None:
+            for val in vals:
+                self.add(val)
 
-
-class DocoptExit(SystemExit):
-
-    """Exit in case user invoked program with incorrect arguments."""
-
-    usage = ''
-
-    def __init__(self, message=''):
-        SystemExit.__init__(self, (message + '\n' + self.usage).strip())
+    def add(self, new):
+        if new not in self:
+            self.append(new)
 
 
-class Pattern(object):
+class Node(object):
 
-    def __eq__(self, other):
-        return repr(self) == repr(other)
-
-    def __hash__(self):
-        return hash(repr(self))
-
-    def fix(self):
-        self.fix_identities()
-        self.fix_list_arguments()
-        return self
-
-    def fix_identities(self, uniq=None):
-        """Make pattern-tree tips point to same object if they are equal."""
-        if not hasattr(self, 'children'):
-            return self
-        uniq = list(set(self.flat)) if uniq == None else uniq
-        for i, c in enumerate(self.children):
-            if not hasattr(c, 'children'):
-                assert c in uniq
-                self.children[i] = uniq[uniq.index(c)]
-            else:
-                c.fix_identities(uniq)
-
-    def fix_list_arguments(self):
-        """Find arguments that should accumulate values and fix them."""
-        either = [list(c.children) for c in self.either.children]
-        for case in either:
-            for e in [c for c in case if case.count(c) > 1]:
-                if type(e) is Argument or type(e) is Option and e.argcount:
-                    e.value = []
-                if type(e) is Command or type(e) is Option and e.argcount == 0:
-                    e.value = 0
-        return self
-
-    @property
-    def either(self):
-        """Transform pattern into an equivalent, with only top-level Either."""
-        # Currently the pattern will not be equivalent, but more "narrow",
-        # although good enough to reason about list arguments.
-        ret = []
-        groups = [[self]]
-        while groups:
-            children = groups.pop(0)
-            types = [type(c) for c in children]
-            if Either in types:
-                either = [c for c in children if type(c) is Either][0]
-                children.pop(children.index(either))
-                for c in either.children:
-                    groups.append([c] + children)
-            elif Required in types:
-                required = [c for c in children if type(c) is Required][0]
-                children.pop(children.index(required))
-                groups.append(list(required.children) + children)
-            elif Optional in types:
-                optional = [c for c in children if type(c) is Optional][0]
-                children.pop(children.index(optional))
-                groups.append(list(optional.children) + children)
-            elif OneOrMore in types:
-                oneormore = [c for c in children if type(c) is OneOrMore][0]
-                children.pop(children.index(oneormore))
-                groups.append(list(oneormore.children) * 2 + children)
-            else:
-                ret.append(children)
-        return Either(*[Required(*e) for e in ret])
-
-
-class ChildPattern(Pattern):
-
-    def __init__(self, name, value=None):
+    def __init__(self, name, symbols):
         self.name = name
-        self.value = value
+        self.symbols = symbols
+        self.next = orderedset()
+        self.value = []
+        self.collapsed = False
+        self.repred = False
 
-    def __repr__(self):
-        return '%s(%r, %r)' % (self.__class__.__name__, self.name, self.value)
+    def extend(self, stream, last):
+        if not stream:
+            self.next.add(DOLLAR)
+            return DOLLAR
+        name = stream[0]
+        if name in ')]|':
+            return self
+        for node in self.next:
+            tail = node.extend(stream, last)
+            if tail is not None:
+                return tail
+        if name in '([':
+            stream.pop(0)
+            start, end = Epsilon(), Epsilon()
+            self.next.add(start)
+            next = '|'
+            while next == '|':
+                tail = start.extend(stream, start)
+                tail.next.add(end)
+                next = stream.pop(0)
+            if next not in ')]':
+                raise ValueError('Unbalanced parentheses or brackets.')
+            if name == '[':
+                self.next.add(end)
+            return end.extend(stream, start)
+        elif name == '...':
+            self.next.add(last)
+            stream.pop(0)
+            return Node.extend(self, stream, self)
+        else:
+            new = self.get(name)
+            self.next.add(new)
+            return new.extend(stream, new)
 
-    @property
-    def flat(self):
+    def set(self, value):
+        self.value.append(value)
+
+    def get(self, name):
+        if name in self.symbols:
+            return self.symbols[name].copy()
+        if name.isupper() or (name[0] == '<' and name[-1] == '>'):
+            new = Argument(name, self.symbols)
+        elif name.startswith('-'):
+            new = Option(name, {})
+        else:
+            new = Command(name, {})
+        self.symbols[name] = new
+        return new.copy()
+
+    def collapse(self):
+        if not self.collapsed:
+            self.collapsed = True
+            self.next = sorted(orderedset(node for next in self.next 
+                                          for node in next.collapse()),
+                               key=attrgetter('weight'))
         return [self]
 
-    def match(self, left, collected=None):
-        collected = [] if collected is None else collected
-        pos, match = self.single_match(left)
-        if match is None:
-            return False, left, collected
-        left_ = left[:pos] + left[pos+1:]
-        same_name = [a for a in collected if a.name == self.name]
-        if type(self.value) in (int, list):
-            increment = 1 if type(self.value) is int else [match.value]
-            if not same_name:
-                match.value = increment
-                return True, left_, collected + [match]
-            same_name[0].value += increment
-            return True, left_, collected
-        return True, left_, collected + [match]
+    def match(self, stream):
+        for node in self.next:
+            try:
+                res = node.match(stream)
+                if res is not None:
+                    return res
+            except:
+                continue
+        return None
 
+    def copy(self):
+        new = self.__class__(self.name, self.symbols)
+        new.value = self.value
+        new.next = orderedset(self.next)
+        return new
 
-class ParrentPattern(Pattern):
-
-    def __init__(self, *children):
-        self.children = list(children)
+    def __hash__(self):
+        return hash(self.name)
 
     def __repr__(self):
-        return '%s(%s)' % (self.__class__.__name__,
-                           ', '.join(repr(a) for a in self.children))
+        info = self.__class__.__name__, self.name
+        if not self.repred:
+            self.repred = True
+            next = '\n  '.join(line for node in self.next
+                               for line in repr(node).split('\n'))
+            return '%s(%r, ...)\n  %s' % (info + (next,))
+        return '%s(%r, ...)\n  ...' % info
 
-    @property
-    def flat(self):
-        return sum([c.flat for c in self.children], [])
+
+class Epsilon(Node):
+
+    weight = 1000
+
+    def __init__(self):
+        Node.__init__(self, 'ε', {})
+
+    def collapse(self):
+        if not self.collapsed:
+            self.collapsed = True
+            self.next = orderedset(node for next in self.next
+                                   for node in next.collapse())
+        return self.next
+
+    def __repr__(self):
+        if not self.repred:
+            self.repred = True
+            if self.next:
+                next = '\n  '.join(line for node in self.next
+                                   for line in repr(node).split('\n'))
+                return 'ε\n  %s' % next
+            else:
+                return 'ε'
+        return 'ε'
 
 
-class Argument(ChildPattern):
+class Argument(Node):
 
-    def single_match(self, left):
-        for n, p in enumerate(left):
-            if type(p) is Argument:
-                return n, Argument(self.name, p.value)
-        return None, None
+    weight = 2
+
+    def extend(self, stream, last):
+        if not stream:
+            return DOLLAR
+        name = stream[0]
+        if name != self.name:
+            return None
+        stream.pop(0)
+        return Node.extend(self, stream, self)
+
+    def match(self, stream):
+        tok = stream.pop(0)
+        res = Node.match(self, stream)
+        if res is not None:
+            self.set(tok)
+            res[self.name] = self.value
+            return res
+        stream.insert(0, tok)
+        return None
+
+
+class Option(Argument):
+
+    weight = 1
+
+    def match(self, stream):
+        if not stream:
+            return None
+        name = stream.pop(0)
+        if name == self.name:
+            res = Node.match(self, stream)
+            if res is not None:
+                self.set(True)
+                res[self.name] = self.value
+                return res
+        stream.insert(0, name)
+        return None
 
 
 class Command(Argument):
 
-    def __init__(self, name, value=False):
-        self.name = name
-        self.value = value
-
-    def single_match(self, left):
-        for n, p in enumerate(left):
-            if type(p) is Argument:
-                if p.value == self.name:
-                    return n, Command(self.name, True)
-                else:
-                    break
-        return None, None
+    weight = 1
 
 
-class Option(ChildPattern):
+    def match(self, stream):
+        if not stream:
+            return None
+        name = stream.pop(0)
+        if name == self.name:
+            res = Node.match(self, stream)
+            if res is not None:
+                self.set(True)
+                res[self.name] = self.value
+                return res
+        stream.insert(0, name)
+        return None
 
-    def __init__(self, short=None, long=None, argcount=0, value=False):
-        assert argcount in (0, 1)
-        self.short, self.long = short, long
-        self.argcount, self.value = argcount, value
-        self.value = None if value == False and argcount else value  # HACK
 
-    @classmethod
-    def parse(class_, option_description):
-        short, long, argcount, value = None, None, 0, False
-        options, _, description = option_description.strip().partition('  ')
-        options = options.replace(',', ' ').replace('=', ' ')
-        for s in options.split():
-            if s.startswith('--'):
-                long = s
-            elif s.startswith('-'):
-                short = s
-            else:
-                argcount = 1
-        if argcount:
-            matched = re.findall('\[default: (.*)\]', description, flags=re.I)
-            value = matched[0] if matched else None
-        return class_(short, long, argcount, value)
+class Beginning(Node): # In typical notation, ^
 
-    def single_match(self, left):
-        for n, p in enumerate(left):
-            if self.name == p.name:
-                return n, p
-        return None, None
+    weight = 0
 
-    @property
-    def name(self):
-        return self.long or self.short
+    def __init__(self):
+        Node.__init__(self, '^', {})
 
     def __repr__(self):
-        return 'Option(%r, %r, %r, %r)' % (self.short, self.long,
-                                           self.argcount, self.value)
+        next = '\n  '.join(line for node in self.next
+                           for line in repr(node).split('\n'))
+        return '%s\n  %s' % (self.name, next)
 
 
-class Required(ParrentPattern):
+class Terminus(Node): # In typical notation, $
+    
+    weight = 0
 
-    def match(self, left, collected=None):
-        collected = [] if collected is None else collected
-        l = left
-        c = collected
-        for p in self.children:
-            matched, l, c = p.match(l, c)
-            if not matched:
-                return False, left, collected
-        return True, l, c
+    def __init__(self):
+        Node.__init__(self, '$', {})
 
-
-class Optional(ParrentPattern):
-
-    def match(self, left, collected=None):
-        collected = [] if collected is None else collected
-        for p in self.children:
-            m, left, collected = p.match(left, collected)
-        return True, left, collected
-
-
-class OneOrMore(ParrentPattern):
-
-    def match(self, left, collected=None):
-        assert len(self.children) == 1
-        collected = [] if collected is None else collected
-        l = left
-        c = collected
-        l_ = None
-        matched = True
-        times = 0
-        while matched:
-            # could it be that something didn't match but changed l or c?
-            matched, l, c = self.children[0].match(l, c)
-            times += 1 if matched else 0
-            if l_ == l:
-                break
-            l_ = l
-        if times >= 1:
-            return True, l, c
-        return False, left, collected
-
-
-class Either(ParrentPattern):
-
-    def match(self, left, collected=None):
-        collected = [] if collected is None else collected
-        outcomes = []
-        for p in self.children:
-            matched, _, _ = outcome = p.match(left, collected)
-            if matched:
-                outcomes.append(outcome)
-        if outcomes:
-            return min(outcomes, key=lambda outcome: len(outcome[1]))
-        return False, left, collected
-
-
-class TokenStream(list):
-
-    def __init__(self, source, error):
-        self += source.split() if hasattr(source, 'split') else source
-        self.error = error
-
-    def move(self):
-        return self.pop(0) if len(self) else None
-
-    def current(self):
-        return self[0] if len(self) else None
-
-
-def parse_long(tokens, options):
-    raw, eq, value = tokens.move().partition('=')
-    value = None if eq == value == '' else value
-    opt = [o for o in options if o.long and o.long == raw]
-    if tokens.error is DocoptExit and opt == []:
-        opt = [o for o in options if o.long and o.long.startswith(raw)]
-    if len(opt) < 1:
-        if tokens.error is DocoptExit:
-            raise tokens.error('%s is not recognized' % raw)
-        else:
-            o = Option(None, raw, (1 if eq == '=' else 0))
-            options.append(o)
-            return [o]
-    if len(opt) > 1:
-        raise tokens.error('%s is not a unique prefix: %s?' %
-                         (raw, ', '.join('%s' % o.long for o in opt)))
-    o = opt[0]
-    opt = Option(o.short, o.long, o.argcount, o.value)
-    if opt.argcount == 1:
-        if value is None:
-            if tokens.current() is None:
-                raise tokens.error('%s requires argument' % opt.name)
-            value = tokens.move()
-    elif value is not None:
-        raise tokens.error('%s must not have an argument' % opt.name)
-    if tokens.error is DocoptExit:
-        opt.value = value or True
-    else:
-        opt.value = None if value else False
-    return [opt]
-
-
-def parse_shorts(tokens, options):
-    raw = tokens.move()[1:]
-    parsed = []
-    while raw != '':
-        opt = [o for o in options
-               if o.short and o.short.lstrip('-').startswith(raw[0])]
-        if len(opt) > 1:
-            raise tokens.error('-%s is specified ambiguously %d times' %
-                              (raw[0], len(opt)))
-        if len(opt) < 1:
-            if tokens.error is DocoptExit:
-                raise tokens.error('-%s is not recognized' % raw[0])
-            else:
-                o = Option('-' + raw[0], None)
-                options.append(o)
-                parsed.append(o)
-                raw = raw[1:]
-                continue
-        o = opt[0]
-        opt = Option(o.short, o.long, o.argcount, o.value)
-        raw = raw[1:]
-        if opt.argcount == 0:
-            value = True if tokens.error is DocoptExit else False
-        else:
-            if raw == '':
-                if tokens.current() is None:
-                    raise tokens.error('-%s requires argument' % opt.short[0])
-                raw = tokens.move()
-            value, raw = raw, ''
-        if tokens.error is DocoptExit:
-            opt.value = value
-        else:
-            opt.value = None if value else False
-        parsed.append(opt)
-    return parsed
-
-
-def parse_pattern(source, options):
-    tokens = TokenStream(re.sub(r'([\[\]\(\)\|]|\.\.\.)', r' \1 ', source),
-                         DocoptLanguageError)
-    result = parse_expr(tokens, options)
-    if tokens.current() is not None:
-        raise tokens.error('unexpected ending: %r' % ' '.join(tokens))
-    return Required(*result)
-
-
-def parse_expr(tokens, options):
-    """expr ::= seq ( '|' seq )* ;"""
-    seq = parse_seq(tokens, options)
-    if tokens.current() != '|':
-        return seq
-    result = [Required(*seq)] if len(seq) > 1 else seq
-    while tokens.current() == '|':
-        tokens.move()
-        seq = parse_seq(tokens, options)
-        result += [Required(*seq)] if len(seq) > 1 else seq
-    return [Either(*result)] if len(result) > 1 else result
-
-
-def parse_seq(tokens, options):
-    """seq ::= ( atom [ '...' ] )* ;"""
-    result = []
-    while tokens.current() not in [None, ']', ')', '|']:
-        atom = parse_atom(tokens, options)
-        if tokens.current() == '...':
-            atom = [OneOrMore(*atom)]
-            tokens.move()
-        result += atom
-    return result
-
-
-def parse_atom(tokens, options):
-    """atom ::= '(' expr ')' | '[' expr ']' | 'options'
-             | long | shorts | argument | command ;
-    """
-    token = tokens.current()
-    result = []
-    if token in '([':
-        tokens.move()
-        matching, pattern = {'(': [')', Required], '[': [']', Optional]}[token]
-        result = pattern(*parse_expr(tokens, options))
-        if tokens.move() != matching:
-            raise tokens.error("unmatched '%s'" % token)
-        return [result]
-    elif token == 'options':
-        tokens.move()
-        return options
-    elif token.startswith('--') and token != '--':
-        return parse_long(tokens, options)
-    elif token.startswith('-') and token not in ('-', '--'):
-        return parse_shorts(tokens, options)
-    elif token.startswith('<') and token.endswith('>') or token.isupper():
-        return [Argument(tokens.move())]
-    else:
-        return [Command(tokens.move())]
-
-
-def parse_argv(source, options):
-    tokens = TokenStream(source, DocoptExit)
-    parsed = []
-    while tokens.current() is not None:
-        if tokens.current() == '--':
-            return parsed + [Argument(None, v) for v in tokens]
-        elif tokens.current().startswith('--'):
-            parsed += parse_long(tokens, options)
-        elif tokens.current().startswith('-') and tokens.current() != '-':
-            parsed += parse_shorts(tokens, options)
-        else:
-            parsed.append(Argument(None, tokens.move()))
-    return parsed
-
-
-def parse_doc_options(doc):
-    return [Option.parse('-' + s) for s in re.split('^ *-|\n *-', doc)[1:]]
-
-
-def printable_usage(doc):
-    usage_split = re.split(r'([Uu][Ss][Aa][Gg][Ee]:)', doc)
-    if len(usage_split) < 3:
-        raise DocoptLanguageError('"usage:" (case-insensitive) not found.')
-    if len(usage_split) > 3:
-        raise DocoptLanguageError('More than one "usage:" (case-insensitive).')
-    return re.split(r'\n\s*\n', ''.join(usage_split[1:]))[0].strip()
-
-
-def formal_usage(printable_usage):
-    pu = printable_usage.split()[1:]  # split and drop "usage:"
-    return '( ' + ' '.join(') | (' if s == pu[0] else s for s in pu[1:]) + ' )'
-
-
-def extras(help, version, options, doc):
-    if help and any((o.name in ('-h', '--help')) and o.value for o in options):
-        print(doc.strip())
-        exit()
-    if version and any(o.name == '--version' and o.value for o in options):
-        print(version)
-        exit()
-
-
-class Dict(dict):
     def __repr__(self):
-        return '{%s}' % ',\n '.join('%r: %r' % i for i in sorted(self.items()))
+        return self.name
+
+    def match(self, stream):
+        if not stream:
+            return {}
+        return None
 
 
-def docopt(doc, argv=sys.argv[1:], help=True, version=None):
-    DocoptExit.usage = printable_usage(doc)
-    options = parse_doc_options(doc)
-    pattern = parse_pattern(formal_usage(DocoptExit.usage), options)
-    argv = parse_argv(argv, options)
-    extras(help, version, argv, doc)
-    matched, left, collected = pattern.fix().match(argv)
-    if matched and left == []:  # better error message if left?
-        return Dict((a.name, a.value) for a in (pattern.flat + options + collected))
-    raise DocoptExit()
+CARET = Beginning()
+DOLLAR = Terminus()
+DEBUG = 1
+if __name__ == '__main__':
+    import sys
+    tokens = ['test', '[', 'y', '[', '--opt', 'Z',']', ']', '...', 'W']
+    CARET.extend(tokens, None)
+    CARET.collapse()
+    print CARET.match(['test', 'y', '--opt', 1, 'y', 'X'])

@@ -1,10 +1,17 @@
 `docopt` creates *beautiful* command-line interfaces
 ===============================================================================
 
-> New in version 0.5.0:
->
-> Repeatable flags and commands are counted if repeated (a-la ssh `-vvv`).
-> Repeatable options with arguments are accumulated into list.
+> This is an experimental branch for developing an NFA for future docopt 
+> releases. There are still some problems with it, so bear with.
+> 
+> Issues:
+> * Option are treated identically to commands.
+> * Order in square brackets matters. On the one hand, this means that you can
+>   write [A B] instead of [(A B)], on the other hand, this does not agree with
+>   older version of docopt. I will argue that this is better for commands and
+>   arguments (in which case, [A B] is a nonsense statement), and that this
+>   will need to be changed only for options.
+> * Possibly others.
 
 Isn't it awesome how `optparse` and `argparse` generate help messages
 based on your code?!

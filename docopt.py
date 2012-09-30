@@ -204,7 +204,6 @@ class Command(Argument):
 
     weight = 1
 
-
     def match(self, stream):
         if not stream:
             return None
@@ -256,4 +255,4 @@ if __name__ == '__main__':
     tokens = ['test', '[', 'y', '[', '--opt', 'Z',']', ']', '...', 'W']
     CARET.extend(tokens, None)
     CARET.collapse()
-    print CARET.match(['test', 'y', '--opt', 1, 'y', 'X'])
+    print(CARET.match(['test', 'y', '--opt', 1, 'y', 'X']))

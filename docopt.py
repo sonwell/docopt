@@ -16,6 +16,39 @@ Weight classes:
                     will avoid a problem with infinite loops via '...'.
 '''
 
+'''
+A call to docopt will (eventually) perform the following:
+
+Collect option definitions. This will create the basal symbol table that all
+nodes inherit from (Node._sym).
+
+Build an NFA:
+  Take for example the usage pattern
+    test [y [Z]]... [W]
+  The NFA will look like
+  (test) -> ε'[' -> (y) -> ε'[' -> (Z) -> ε']' -> ε']' -> ε'[' -> (W) -> ε']'
+   ^        |`.             `------>-------'      .'|      `------->------'|
+   |        `. `--------------->-----------------' .'                      v
+   ^          `<----------------------------------'                        $
+  where ^ and $ and the above line are the starting and accepting nodes,
+  respectively.
+
+Collapse the NFA (remove epsilons):
+                  .---<--.
+  ^ -> (test) -> (y) -> (Z) -> (W) -> $
+         `.      '-^----->------+-----'
+           `---------->--------'
+  where y has a has a path to itself (observe that this is true via the usage
+  pattern).
+
+Move through the NFA. If we reach the accepting ($) state with an empty token
+stream, then we accept. As we return through the NFA, we will pair nodes with
+values. Currently it is returning a dict just like the reference
+implementation, but considering the things we get for free from the NFA, and
+the possibility of delegating according to subcommand use, this may not be the
+best choice.
+'''
+
 def debug_msg(*msg):
     if len(msg) == 1:
         msg = msg[0]
@@ -35,12 +68,21 @@ class orderedset(list):
         if new not in self:
             self.append(new)
 
+    def __add__(self, new):
+        return orderedset(list.__add__(self, new))
+
+    def __sub__(self, new):
+        return orderedset(a for a in self if a not in new)
+
 
 class Node(object):
 
+    weight = 1000
+
     def __init__(self, name, symbols):
         self.name = name
-        self.symbols = symbols
+        self.symbols = dict(symbols)
+        self._sym = symbols
         self.next = orderedset()
         self.value = []
         self.collapsed = False
@@ -53,21 +95,18 @@ class Node(object):
         name = stream[0]
         if name in ')]|':
             return self
-        for node in self.next:
-            tail = node.extend(stream, last)
-            if tail is not None:
-                return tail
         if name in '([':
             stream.pop(0)
-            start, end = Epsilon(), Epsilon()
+            start, end = Epsilon(self._sym), Epsilon(self._sym)
             self.next.add(start)
             next = '|'
             while next == '|':
                 tail = start.extend(stream, start)
                 tail.next.add(end)
                 next = stream.pop(0)
-            if next not in ')]':
-                raise ValueError('Unbalanced parentheses or brackets.')
+            if next != {'(': ')', '[': ']'}[name]:
+                raise ValueError('Unbalanced %s.' % {'(': 'parentheses',
+                                                     '[': 'brackets'}[name])
             if name == '[':
                 self.next.add(end)
             return end.extend(stream, start)
@@ -76,6 +115,10 @@ class Node(object):
             stream.pop(0)
             return Node.extend(self, stream, self)
         else:
+            for node in self.next:
+                tail = node.extend(stream, last)
+                if tail is not None:
+                    return tail
             new = self.get(name)
             self.next.add(new)
             return new.extend(stream, new)
@@ -89,9 +132,9 @@ class Node(object):
         if name.isupper() or (name[0] == '<' and name[-1] == '>'):
             new = Argument(name, self.symbols)
         elif name.startswith('-'):
-            new = Option(name, {})
+            new = Option(name, self._sym)
         else:
-            new = Command(name, {})
+            new = Command(name, self._sym)
         self.symbols[name] = new
         return new.copy()
 
@@ -105,12 +148,9 @@ class Node(object):
 
     def match(self, stream):
         for node in self.next:
-            try:
-                res = node.match(stream)
-                if res is not None:
-                    return res
-            except:
-                continue
+            res = node.match(stream)
+            if res is not None:
+                return res
         return None
 
     def copy(self):
@@ -119,25 +159,11 @@ class Node(object):
         new.next = orderedset(self.next)
         return new
 
-    def __hash__(self):
-        return hash(self.name)
-
-    def __repr__(self):
-        info = self.__class__.__name__, self.name
-        if not self.repred:
-            self.repred = True
-            next = '\n  '.join(line for node in self.next
-                               for line in repr(node).split('\n'))
-            return '%s(%r, ...)\n  %s' % (info + (next,))
-        return '%s(%r, ...)\n  ...' % info
-
 
 class Epsilon(Node):
 
-    weight = 1000
-
-    def __init__(self):
-        Node.__init__(self, 'ε', {})
+    def __init__(self, symbols):
+        Node.__init__(self, 'ε', symbols)
 
     def collapse(self):
         if not self.collapsed:
@@ -146,17 +172,43 @@ class Epsilon(Node):
                                    for node in next.collapse())
         return self.next
 
-    def __repr__(self):
-        if not self.repred:
-            self.repred = True
-            if self.next:
-                next = '\n  '.join(line for node in self.next
-                                   for line in repr(node).split('\n'))
-                return 'ε\n  %s' % next
-            else:
-                return 'ε'
-        return 'ε'
+    def match(self, stream):
+        raise NotImplementedError("Somehow you've attempted to match " +
+                                  "against and epsilon node. Contact the" +
+                                  "devs at <https://github.com/docopt>.")
 
+
+class Options(Epsilon):
+
+    def __init__(self, symbols):
+        Epsilon.__init__(self, symbols)
+        self.options = orderedset()
+        self.tracking = []
+
+    def collapse(self):
+        copies = orderedset()
+        for option in self.options - self.tracking:
+            copy = option.copy()
+            copy.next = option.next
+            copies.add(copy)
+            self.tracking.insert(0, option)
+            copy.collapse()
+            self.tracking.pop(0)
+        return copies + self.next
+
+    def extend(self, stream, last):
+        if not stream:
+            return self
+        while True:
+            name = stream[0]
+            if not name.startswith('-'):
+                break
+            curr = self.get(name)
+            self.options.add(curr)
+            tail = curr.extend(stream, last)
+            tail.next.add(self)
+        return Node.extend(self, stream, last)
+            
 
 class Argument(Node):
 
@@ -166,10 +218,10 @@ class Argument(Node):
         if not stream:
             return DOLLAR
         name = stream[0]
-        if name != self.name:
-            return None
-        stream.pop(0)
-        return Node.extend(self, stream, self)
+        if self.name == name:
+            stream.pop(0)
+            return Node.extend(self, stream, self)
+        return None
 
     def match(self, stream):
         tok = stream.pop(0)
@@ -190,7 +242,7 @@ class Option(Argument):
         if not stream:
             return None
         name = stream.pop(0)
-        if name == self.name:
+        if self.name == name:
             res = Node.match(self, stream)
             if res is not None:
                 self.set(True)
@@ -198,6 +250,9 @@ class Option(Argument):
                 return res
         stream.insert(0, name)
         return None
+
+    def extend(self, stream, last):
+        pass
 
 
 class Command(Argument):
@@ -208,7 +263,7 @@ class Command(Argument):
         if not stream:
             return None
         name = stream.pop(0)
-        if name == self.name:
+        if self.name == name:
             res = Node.match(self, stream)
             if res is not None:
                 self.set(True)
@@ -222,24 +277,16 @@ class Beginning(Node): # In typical notation, ^
 
     weight = 0
 
-    def __init__(self):
-        Node.__init__(self, '^', {})
-
-    def __repr__(self):
-        next = '\n  '.join(line for node in self.next
-                           for line in repr(node).split('\n'))
-        return '%s\n  %s' % (self.name, next)
+    def __init__(self, symbols):
+        Node.__init__(self, '^', symbols)
 
 
 class Terminus(Node): # In typical notation, $
     
     weight = 0
 
-    def __init__(self):
-        Node.__init__(self, '$', {})
-
-    def __repr__(self):
-        return self.name
+    def __init__(self, symbols):
+        Node.__init__(self, '$', symbols)
 
     def match(self, stream):
         if not stream:
@@ -247,8 +294,8 @@ class Terminus(Node): # In typical notation, $
         return None
 
 
-CARET = Beginning()
-DOLLAR = Terminus()
+CARET = Beginning({})
+DOLLAR = Terminus({})
 DEBUG = 1
 if __name__ == '__main__':
     import sys

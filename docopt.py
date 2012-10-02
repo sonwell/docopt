@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # -*- encoding: utf-8 -*-
-from operator import attrgetter
 
 '''
 Weighting nodes achieves the same effect as Pattern.either in the old versions,
@@ -48,6 +47,12 @@ implementation, but considering the things we get for free from the NFA, and
 the possibility of delegating according to subcommand use, this may not be the
 best choice.
 '''
+from operator import attrgetter
+
+
+class DocoptLanguageError(Exception):
+    pass
+
 
 def debug_msg(*msg):
     if len(msg) == 1:
@@ -105,8 +110,9 @@ class Node(object):
                 tail.next.add(end)
                 next = stream.pop(0)
             if next != {'(': ')', '[': ']'}[name]:
-                raise ValueError('Unbalanced %s.' % {'(': 'parentheses',
-                                                     '[': 'brackets'}[name])
+                raise DocoptLanguageError('Unbalanced %s.' % 
+                                          {'(': 'parentheses',
+                                           '[': 'brackets'}[name])
             if name == '[':
                 self.next.add(end)
             return end.extend(stream, start)
@@ -119,7 +125,7 @@ class Node(object):
                 tail = node.extend(stream, last)
                 if tail is not None:
                     return tail
-            new = self.get(name)
+            new = Node.get(self, name)
             self.next.add(new)
             return new.extend(stream, new)
 
@@ -127,12 +133,12 @@ class Node(object):
         self.value.append(value)
 
     def get(self, name):
-        if name in self.symbols:
+        if name.startswith('-'):
+            return Options(self._sym)
+        elif name in self.symbols:
             return self.symbols[name].copy()
-        if name.isupper() or (name[0] == '<' and name[-1] == '>'):
+        elif name.isupper() or (name[0] == '<' and name[-1] == '>'):
             new = Argument(name, self.symbols)
-        elif name.startswith('-'):
-            new = Option(name, self._sym)
         else:
             new = Command(name, self._sym)
         self.symbols[name] = new
@@ -186,7 +192,7 @@ class Options(Epsilon):
         self.tracking = []
 
     def collapse(self):
-        copies = orderedset()
+        copies = orderedset(Epsilon.collapse(self) if self.tracking else [])
         for option in self.options - self.tracking:
             copy = option.copy()
             copy.next = option.next
@@ -194,20 +200,36 @@ class Options(Epsilon):
             self.tracking.insert(0, option)
             copy.collapse()
             self.tracking.pop(0)
-        return copies + self.next
+        return copies
 
     def extend(self, stream, last):
         if not stream:
             return self
         while True:
+            if not stream:
+                break
             name = stream[0]
             if not name.startswith('-'):
                 break
             curr = self.get(name)
             self.options.add(curr)
             tail = curr.extend(stream, last)
-            tail.next.add(self)
+            if tail is not None:
+                tail.next.add(self)
         return Node.extend(self, stream, last)
+
+    def get(self, name):
+        if name in self.symbols:
+            new = self.symbols[name]
+        elif name.startswith('-'):
+            new = Option(name, self._sym)
+        else:
+            raise NotImplementedError("Somehow you've attempted to get an " +
+                                       "option that is in fact not an " +
+                                       "option. Contact the devs at " +
+                                       "<https://github.com/docopt>.")
+            return Node.get(self, name)
+        return new.copy()
             
 
 class Argument(Node):
@@ -224,6 +246,8 @@ class Argument(Node):
         return None
 
     def match(self, stream):
+        if not stream:
+            return None
         tok = stream.pop(0)
         res = Node.match(self, stream)
         if res is not None:
@@ -252,7 +276,8 @@ class Option(Argument):
         return None
 
     def extend(self, stream, last):
-        pass
+        stream.pop(0)
+        return self
 
 
 class Command(Argument):
@@ -299,7 +324,7 @@ DOLLAR = Terminus({})
 DEBUG = 1
 if __name__ == '__main__':
     import sys
-    tokens = ['test', '[', 'y', '[', '--opt', 'Z',']', ']', '...', 'W']
+    tokens = ['-a', '-b']
     CARET.extend(tokens, None)
     CARET.collapse()
-    print(CARET.match(['test', 'y', '--opt', 1, 'y', 'X']))
+    print(CARET.match([]))

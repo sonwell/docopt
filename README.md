@@ -2,16 +2,8 @@
 ===============================================================================
 
 > This is an experimental branch for developing an NFA for future docopt 
-> releases. There are still some problems with it, so bear with.
-> 
-> Issues:
-> * Option are treated identically to commands.
-> * Order in square brackets matters. On the one hand, this means that you can
->   write [A B] instead of [(A B)], on the other hand, this does not agree with
->   older version of docopt. I will argue that this is better for commands and
->   arguments (in which case, [A B] is a nonsense statement), and that this
->   will need to be changed only for options.
-> * Possibly others.
+> releases. There may still some problems with it, and the API isn't yet 
+> implemented, so bear with.
 
 Isn't it awesome how `optparse` and `argparse` generate help messages
 based on your code?!

@@ -110,7 +110,7 @@ class Node(object):
                 tail.next.add(end)
                 next = stream.pop(0)
             if next != {'(': ')', '[': ']'}[name]:
-                raise DocoptLanguageError('Unbalanced %s.' % 
+                raise DocoptLanguageError('Unbalanced %s.' %
                                           {'(': 'parentheses',
                                            '[': 'brackets'}[name])
             if name == '[':
@@ -136,18 +136,20 @@ class Node(object):
         if name.startswith('-'):
             return Options(self._sym)
         elif name in self.symbols:
-            return self.symbols[name].copy()
+            old = self.symbols[name]
         elif name.isupper() or (name[0] == '<' and name[-1] == '>'):
-            new = Argument(name, self.symbols)
+            old = Argument(name, self.symbols)
         else:
-            new = Command(name, self._sym)
-        self.symbols[name] = new
-        return new.copy()
+            old = Command(name, self._sym)
+        self.symbols[name] = old
+        new = old.copy()
+        new.next = orderedset(old.next)
+        return new
 
     def collapse(self):
         if not self.collapsed:
             self.collapsed = True
-            self.next = sorted(orderedset(node for next in self.next 
+            self.next = sorted(orderedset(node for next in self.next
                                           for node in next.collapse()),
                                key=attrgetter('weight'))
         return [self]
@@ -180,8 +182,9 @@ class Epsilon(Node):
 
     def match(self, stream):
         raise NotImplementedError("Somehow you've attempted to match " +
-                                  "against and epsilon node. Contact the" +
+                                  "against an epsilon node. Contact the" +
                                   "devs at <https://github.com/docopt>.")
+        return None
 
 
 class Options(Epsilon):
@@ -195,7 +198,6 @@ class Options(Epsilon):
         copies = orderedset(Epsilon.collapse(self) if self.tracking else [])
         for option in self.options - self.tracking:
             copy = option.copy()
-            copy.next = option.next
             copies.add(copy)
             self.tracking.insert(0, option)
             copy.collapse()
@@ -220,17 +222,20 @@ class Options(Epsilon):
 
     def get(self, name):
         if name in self.symbols:
-            new = self.symbols[name]
+            old = self.symbols[name]
         elif name.startswith('-'):
-            new = Option(name, self._sym)
+            old = Option(name, self._sym)
         else:
             raise NotImplementedError("Somehow you've attempted to get an " +
                                        "option that is in fact not an " +
                                        "option. Contact the devs at " +
                                        "<https://github.com/docopt>.")
             return Node.get(self, name)
-        return new.copy()
-            
+        self.symbols[name] = old
+        new = old.copy()
+        new.next = orderedset(old.next)
+        return new
+
 
 class Argument(Node):
 
@@ -298,7 +303,7 @@ class Command(Argument):
         return None
 
 
-class Beginning(Node): # In typical notation, ^
+class Beginning(Node):  # In typical notation, ^
 
     weight = 0
 
@@ -306,8 +311,8 @@ class Beginning(Node): # In typical notation, ^
         Node.__init__(self, '^', symbols)
 
 
-class Terminus(Node): # In typical notation, $
-    
+class Terminus(Epsilon):  # In typical notation, $
+
     weight = 0
 
     def __init__(self, symbols):
@@ -318,13 +323,23 @@ class Terminus(Node): # In typical notation, $
             return {}
         return None
 
+    def collapse(self):
+        if self.next:
+            return Epsilon.collapse(self)
+        else:
+            return Node.collapse(self)
 
-CARET = Beginning({})
-DOLLAR = Terminus({})
+    def extend(self, stream, last):
+        return self
+
+
+SYMBOLS = {}
+CARET = Beginning(SYMBOLS)
+DOLLAR = Terminus(SYMBOLS)
 DEBUG = 1
 if __name__ == '__main__':
     import sys
     tokens = ['-a', '-b']
     CARET.extend(tokens, None)
     CARET.collapse()
-    print(CARET.match([]))
+    print(CARET.match(['-b']))

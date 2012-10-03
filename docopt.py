@@ -243,10 +243,6 @@ class Options(Epsilon):
             new = Option(name, self._sym)
             #new.extend([name], self)
         else:
-            raise NotImplementedError("Somehow you've attempted to get an " +
-                                       "option that is in fact not an " +
-                                       "option. Contact the devs at " +
-                                       "<https://github.com/docopt>.")
             return Node.get(self, name)
         self.symbols[name] = new
         return new
@@ -361,8 +357,8 @@ DOLLAR = Terminus(SYMBOLS)
 DEBUG = 1
 if __name__ == '__main__':
     import sys
-    tokens = ['-c', '-a', '...', '-b']
+    tokens = ['-c', '-a', '...', '-b', 'Z']
     CARET.extend(tokens, None)
     CARET.collapse()
     print CARET
-    print(CARET.match(['-c', '-b', '-a', '-a']))
+    print(CARET.match(['-c', '-b', '-a', '-a', 3]))

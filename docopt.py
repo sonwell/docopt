@@ -83,6 +83,17 @@ class orderedset(list):
 class Node(object):
 
     weight = 1000
+    count = 0
+
+    def __repr__(self):
+        rep = self.__class__.__name__ + '(' + self.name + ', ...) [%d]' % self.count
+        if not self.repred:
+            self.repred = True
+            for node in self.next:
+                rep += '\n  ' + '\n  '.join(repr(node).split('\n'))
+        elif self.next:
+            rep += ' ...'
+        return rep
 
     def __init__(self, name, symbols):
         self.name = name
@@ -92,6 +103,8 @@ class Node(object):
         self.value = []
         self.collapsed = False
         self.repred = False
+        self.count = Node.count
+        Node.count += 1
 
     def extend(self, stream, last):
         if not stream:
@@ -110,9 +123,8 @@ class Node(object):
                 tail.next.add(end)
                 next = stream.pop(0)
             if next != {'(': ')', '[': ']'}[name]:
-                raise DocoptLanguageError('Unbalanced %s.' %
-                                          {'(': 'parentheses',
-                                           '[': 'brackets'}[name])
+                word = {'(': 'parentheses', '[': 'brackets'}[name]
+                raise DocoptLanguageError('Unbalanced %s.' % word)
             if name == '[':
                 self.next.add(end)
             return end.extend(stream, start)
@@ -125,7 +137,7 @@ class Node(object):
                 tail = node.extend(stream, last)
                 if tail is not None:
                     return tail
-            new = Node.get(self, name)
+            new = self.get(name)
             self.next.add(new)
             return new.extend(stream, new)
 
@@ -165,6 +177,8 @@ class Node(object):
         new = self.__class__(self.name, self.symbols)
         new.value = self.value
         new.next = orderedset(self.next)
+        if self in new.next:
+            new.next = (new.next - [self]) + [new]
         return new
 
 
@@ -202,11 +216,12 @@ class Options(Epsilon):
             self.tracking.insert(0, option)
             copy.collapse()
             self.tracking.pop(0)
-        return copies
+        return sorted(copies, key=attrgetter("weight"))
 
     def extend(self, stream, last):
         if not stream:
-            return self
+            self.next.add(DOLLAR)
+            return DOLLAR
         while True:
             if not stream:
                 break
@@ -215,25 +230,25 @@ class Options(Epsilon):
                 break
             curr = self.get(name)
             self.options.add(curr)
-            tail = curr.extend(stream, last)
+            tail = curr.extend(stream, self)
             if tail is not None:
                 tail.next.add(self)
-        return Node.extend(self, stream, last)
+        print name
+        return Node.extend(self, stream, self)
 
     def get(self, name):
         if name in self.symbols:
-            old = self.symbols[name]
+            new = self.symbols[name].copy()
         elif name.startswith('-'):
-            old = Option(name, self._sym)
+            new = Option(name, self._sym)
+            #new.extend([name], self)
         else:
             raise NotImplementedError("Somehow you've attempted to get an " +
                                        "option that is in fact not an " +
                                        "option. Contact the devs at " +
                                        "<https://github.com/docopt>.")
             return Node.get(self, name)
-        self.symbols[name] = old
-        new = old.copy()
-        new.next = orderedset(old.next)
+        self.symbols[name] = new
         return new
 
 
@@ -281,7 +296,12 @@ class Option(Argument):
         return None
 
     def extend(self, stream, last):
+        # Note: avoid this when creating Options from
+        #       option descriptions
         stream.pop(0)
+        if stream and stream[0] == '...':
+            stream.pop(0)
+            self.next.add(self)
         return self
 
 
@@ -330,6 +350,8 @@ class Terminus(Epsilon):  # In typical notation, $
             return Node.collapse(self)
 
     def extend(self, stream, last):
+        if stream:
+            return None
         return self
 
 
@@ -339,7 +361,8 @@ DOLLAR = Terminus(SYMBOLS)
 DEBUG = 1
 if __name__ == '__main__':
     import sys
-    tokens = ['-a', '-b']
+    tokens = ['-c', '-a', '...', '-b']
     CARET.extend(tokens, None)
     CARET.collapse()
-    print(CARET.match(['-b']))
+    print CARET
+    print(CARET.match(['-c', '-b', '-a', '-a']))

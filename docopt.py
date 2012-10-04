@@ -2,9 +2,9 @@
 # -*- encoding: utf-8 -*-
 
 '''
-Weighting nodes achieves the same effect as Pattern.either in the old versions,
-without resorting to determining types, etc. Lighter nodes will be tested first
-when we run through the NFA.
+Weighting the nodes helps speed up searching through the NFA by choosing paths
+that will return immediately if it is wrong (e.g., to an option or command).
+Lighter nodes will be tested first when we run through the NFA.
 
 Weight classes:
  ^          0    -- We should never match against '^'.
@@ -21,7 +21,7 @@ A call to docopt will (eventually) perform the following:
 Collect option definitions. This will create the basal symbol table that all
 nodes inherit from (Node._sym).
 
-Build an NFA:
+Build an NFA (extend methods):
   Take for example the usage pattern
     test [y [Z]]... [W]
   The NFA will look like
@@ -32,7 +32,7 @@ Build an NFA:
   where ^ and $ and the above line are the starting and accepting nodes,
   respectively.
 
-Collapse the NFA (remove epsilons):
+Collapse the NFA (collapse methods; remove epsilons):
                   .---<--.
   ^ -> (test) -> (y) -> (Z) -> (W) -> $
          `.      '-^----->------+-----'
@@ -40,12 +40,24 @@ Collapse the NFA (remove epsilons):
   where y has a has a path to itself (observe that this is true via the usage
   pattern).
 
-Move through the NFA. If we reach the accepting ($) state with an empty token
-stream, then we accept. As we return through the NFA, we will pair nodes with
-values. Currently it is returning a dict just like the reference
-implementation, but considering the things we get for free from the NFA, and
-the possibility of delegating according to subcommand use, this may not be the
-best choice.
+Move through the NFA (match methods). If we reach the accepting ($) state with
+an empty token stream, then we accept. As we return through the NFA, we will
+pair nodes with values. Currently it is returning a dict just like the
+reference implementation, but considering the things we get for free from the
+NFA, and the possibility of delegating according to subcommand use, this may
+not be the best choice.
+'''
+
+'''
+TODO:
+ * Collapse the following pattern into a single ε --> Options --> ε:
+                                                 `------->-------'
+                            .-------<?------.
+   ε --> Options --> ε --> ε --> Options --> ε
+    `------->-------'       `------>--------'
+   which corresponds to
+   [*options*] [*more options*] -> [*options* *more options*]
+   with both sides followed optionally by ...
 '''
 from operator import attrgetter
 
@@ -86,7 +98,8 @@ class Node(object):
     count = 0
 
     def __repr__(self):
-        rep = self.__class__.__name__ + '(' + self.name + ', ...) [%d]' % self.count
+        info = (self.__class__.__name__, self.name, self.count)
+        rep = '%s(%r, ...) [%d]' % info
         if not self.repred:
             self.repred = True
             for node in self.next:
@@ -113,7 +126,7 @@ class Node(object):
         name = stream[0]
         if name in ')]|':
             return self
-        if name in '([':
+        elif name in '([':
             stream.pop(0)
             start, end = Epsilon(self._sym), Epsilon(self._sym)
             self.next.add(start)
@@ -132,24 +145,23 @@ class Node(object):
             self.next.add(last)
             stream.pop(0)
             return Node.extend(self, stream, self)
-        else:
-            for node in self.next:
-                tail = node.extend(stream, last)
-                if tail is not None:
-                    return tail
-            new = self.get(name)
-            self.next.add(new)
-            return new.extend(stream, new)
+        for node in self.next:
+            tail = node.extend(stream, last)
+            if tail is not None:
+                return tail
+        new = self.get(name)
+        self.next.add(new)
+        return new.extend(stream, new)
 
     def set(self, value):
         self.value.append(value)
 
     def get(self, name):
-        if name.startswith('-'):
+        if Option.test(name):
             return Options(self._sym)
         elif name in self.symbols:
             old = self.symbols[name]
-        elif name.isupper() or (name[0] == '<' and name[-1] == '>'):
+        elif Argument.test(name):
             old = Argument(name, self.symbols)
         else:
             old = Command(name, self._sym)
@@ -166,9 +178,9 @@ class Node(object):
                                key=attrgetter('weight'))
         return [self]
 
-    def match(self, stream):
+    def match(self, stream, double_dash):
         for node in self.next:
-            res = node.match(stream)
+            res = node.match(stream, double_dash)
             if res is not None:
                 return res
         return None
@@ -194,7 +206,7 @@ class Epsilon(Node):
                                    for node in next.collapse())
         return self.next
 
-    def match(self, stream):
+    def match(self, stream, double_dash):
         raise NotImplementedError("Somehow you've attempted to match " +
                                   "against an epsilon node. Contact the" +
                                   "devs at <https://github.com/docopt>.")
@@ -226,20 +238,19 @@ class Options(Epsilon):
             if not stream:
                 break
             name = stream[0]
-            if not name.startswith('-'):
+            if not Option.test(name):
                 break
             curr = self.get(name)
             self.options.add(curr)
             tail = curr.extend(stream, self)
             if tail is not None:
                 tail.next.add(self)
-        print name
         return Node.extend(self, stream, self)
 
     def get(self, name):
         if name in self.symbols:
             new = self.symbols[name].copy()
-        elif name.startswith('-'):
+        elif Option.test(name):
             new = Option(name, self._sym)
             #new.extend([name], self)
         else:
@@ -261,11 +272,11 @@ class Argument(Node):
             return Node.extend(self, stream, self)
         return None
 
-    def match(self, stream):
+    def match(self, stream, double_dash):
         if not stream:
             return None
         tok = stream.pop(0)
-        res = Node.match(self, stream)
+        res = Node.match(self, stream, double_dash)
         if res is not None:
             self.set(tok)
             res[self.name] = self.value
@@ -273,20 +284,31 @@ class Argument(Node):
         stream.insert(0, tok)
         return None
 
+    @classmethod
+    def test(klass, token):
+        if token[0] == '<' and token[-1] == '>':
+            return True
+        return token.isupper()
+
 
 class Option(Argument):
 
     weight = 1
 
-    def match(self, stream):
+    def __init__(self, name, symbols):
+        Argument.__init__(self, name, symbols)
+        self.names = [name]
+
+    def match(self, stream, double_dash):
         if not stream:
             return None
         name = stream.pop(0)
-        if self.name == name:
-            res = Node.match(self, stream)
+        if name in self.names:
+            res = Node.match(self, stream, double_dash)
             if res is not None:
                 self.set(True)
-                res[self.name] = self.value
+                for name in self.names:
+                    res[name] = self.value
                 return res
         stream.insert(0, name)
         return None
@@ -300,23 +322,35 @@ class Option(Argument):
             self.next.add(self)
         return self
 
+    @classmethod
+    def test(klass, token):
+        if token in '--':
+            return False
+        if token[0] == '-':
+            return True
+        return False
+
 
 class Command(Argument):
 
     weight = 1
 
-    def match(self, stream):
+    def match(self, stream, double_dash):
         if not stream:
             return None
         name = stream.pop(0)
         if self.name == name:
-            res = Node.match(self, stream)
+            res = Node.match(self, stream, name == '--')
             if res is not None:
                 self.set(True)
-                res[self.name] = self.value
+                res[name] = self.value
                 return res
         stream.insert(0, name)
         return None
+
+    @classmethod
+    def test(klass, token):
+        return not Option.test(token) and not Argument.test(token)
 
 
 class Beginning(Node):  # In typical notation, ^
@@ -334,7 +368,7 @@ class Terminus(Epsilon):  # In typical notation, $
     def __init__(self, symbols):
         Node.__init__(self, '$', symbols)
 
-    def match(self, stream):
+    def match(self, stream, double_dash):
         if not stream:
             return {}
         return None
@@ -360,5 +394,4 @@ if __name__ == '__main__':
     tokens = ['-c', '-a', '...', '-b', 'Z']
     CARET.extend(tokens, None)
     CARET.collapse()
-    print CARET
-    print(CARET.match(['-c', '-b', '-a', '-a', 3]))
+    print(CARET.match(['-c', '-b', '-a', '-a', 3], False))

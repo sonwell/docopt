@@ -66,6 +66,14 @@ class DocoptLanguageError(Exception):
     pass
 
 
+class DocoptExit(SystemExit):
+
+    message = None
+
+    def __init__(self, message=None)
+        SystemExit.__init__(self, message or DocoptExit.message)
+
+
 def debug_msg(*msg):
     if len(msg) == 1:
         msg = msg[0]
@@ -221,7 +229,8 @@ class Options(Epsilon):
         self.tracking = []
 
     def collapse(self):
-        copies = orderedset(Epsilon.collapse(self) if self.tracking else [])
+        copies = orderedset([] if self.options - self.tracking
+                            else Epsilon.collapse(self))
         for option in self.options - self.tracking:
             copy = option.copy()
             copies.add(copy)

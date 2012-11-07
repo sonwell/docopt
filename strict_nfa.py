@@ -22,13 +22,16 @@ class Node(object):
         return next.parse(tokens, prev)
 
     def build(self, used):
+        if set(used) - set(self.options):
+            return None
+            # break
         for option in self.options:
             if option not in used:
                 copy = option.copy()
                 new = self.copy()
+#                copy.follow.append(self)
+#                self.follow.append(copy)
                 new.build(used + [option])
-                copy.follow += new.follow or [DOLLAR.copy()]
-                self.follow.append(copy)
         for node in self.next:
             copy = node.copy()
             if copy not in self.follow:
@@ -77,7 +80,7 @@ class Node(object):
         return sym.copy()
 
     def __repr__(self):
-        if self.repred < 10:
+        if self.repred < 3:
             self.repred += 1
             items = self.follow
             cl = self.__class__.__name__
@@ -142,6 +145,8 @@ class Option(Literal):
 
     def parse(self, tokens, prev):
         next, options = Node.parse(self, tokens, prev + [self])
+#        self.options = prev + options
+#        self.next.append(next)
         return next, [self] + options
 
 class Terminus(Command):
@@ -154,7 +159,7 @@ class Terminus(Command):
 
     def collapse(self):
         if self.follow:  # stuff follows this "Terminus"
-            return self.follow
+            return self.follow #[node for f in self.follow for node in f.collapse()]
         return [DOLLAR]  # this is an accepting state of the NFA
 
     def match(self, tokens):
@@ -175,4 +180,5 @@ if __name__ == '__main__':
     CARET.parse(['x', '-y', '<z>', '-a', '<x>'], [])
     CARET.build([])
     CARET.collapse()
-    print(CARET.match(['x', '-y', '-a', 1, 2]))
+    print CARET
+    #print(CARET.match(['x', '-y', '-a', 1, 2]))

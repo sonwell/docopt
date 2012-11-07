@@ -18,10 +18,16 @@ class Node(object):
     def parse(self, tokens, prev):
         if not tokens:
             return DOLLAR.parse(tokens, prev)
+        for node in self.next + self.options:
+            res = node.parse(tokens, prev)
+            if res is not None:
+                return res
         next = self.get(tokens)
         return next.parse(tokens, prev)
 
     def build(self, used):
+        if set(used) - set(self.options):
+            return
         for option in self.options:
             if option not in used:
                 copy = option.copy()
@@ -57,17 +63,17 @@ class Node(object):
         return self.proto is other.proto
 
     def get(self, tokens):
-        name = tokens.pop(0)
+        name = tokens[0]
         if name in self.symbols:
-            return self.symbols[name].copy
+            return self.symbols[name].copy()
         if _is_option(name):
             if len(name) > 2:
                 if name[1] == '-':  # -o<arg> format
                     name, arg = name[:2], name[2:]
-                    tokens.insert(0, arg)
+                    #tokens.insert(0, arg)
                 elif '=' in name:   # --long=<arg> format
                     name, args = name.split('=', 1)
-                    tokens.insert(0, arg)
+                    #tokens.insert(0, arg)
             sym = Option(name, self.symbols)
         elif _is_argument(name):
             sym = Argument(name, self.symbols)
@@ -77,16 +83,17 @@ class Node(object):
         return sym.copy()
 
     def __repr__(self):
-        if self.repred < 10:
+        cl = self.__class__.__name__
+        if self.repred < 4:
             self.repred += 1
             items = self.follow
-            cl = self.__class__.__name__
             if items:
                 nexts = '\n  '.join('\n  '.join(repr(node).split('\n'))
                                                 for node in items)
+                self.repred -= 1
                 return '%s(%r)\n  %s' % (cl, self.name, nexts) 
-            return '%s(%r)' % (cl, self.name) 
             self.repred -= 1
+            return '%s(%r)' % (cl, self.name) 
         return '...'
 
 
@@ -119,10 +126,16 @@ class Argument(Variable):
     weight = 1
 
     def parse(self, tokens, prev):
-        next, options = Node.parse(self, tokens, prev)
-        self.options = prev + options
-        self.next.append(next)
-        return self, options
+        if not tokens:
+            return DOLLAR.parse(tokens, prev)
+        name = tokens.pop(0)
+        if name == self.name:
+            next, options = Node.parse(self, tokens, prev)
+            self.options = prev + options
+            self.next.append(next)
+            return self, options
+        tokens.insert(0, name)
+        return None
 
 
 class Command(Literal):
@@ -130,10 +143,16 @@ class Command(Literal):
     weight = 2
 
     def parse(self, tokens, prev):
-        next, options = Node.parse(self, tokens, [])
-        self.options = options
-        self.next.append(next)
-        return self, []
+        if not tokens:
+            return DOLLAR.parse(tokens, prev)
+        name = tokens.pop(0)
+        if name == self.name:
+            next, options = Node.parse(self, tokens, [])
+            self.options = options
+            self.next.append(next)
+            return self, []
+        tokens.insert(0, name)
+        return None
 
 
 class Option(Literal):
@@ -141,8 +160,14 @@ class Option(Literal):
     weight = 2
 
     def parse(self, tokens, prev):
-        next, options = Node.parse(self, tokens, prev + [self])
-        return next, [self] + options
+        if not tokens:
+            return DOLLAR.parse(tokens, prev)
+        name = tokens.pop(0)
+        if name == self.name:
+            next, options = Node.parse(self, tokens, prev + [self])
+            return next, [self] + options
+        tokens.insert(0, name)
+        return None
 
 class Terminus(Command):
 
@@ -167,6 +192,12 @@ class Beginning(Command):
     def match(self, tokens):
         return Node.match(self, tokens)
 
+    def parse(self, tokens, prev):
+        next, options = Node.parse(self, tokens, [])
+        self.options = options
+        self.next.append(next)
+        return self, []
+
 
 CARET = Beginning('^', {})
 DOLLAR = Terminus('$', {})
@@ -175,4 +206,5 @@ if __name__ == '__main__':
     CARET.parse(['x', '-y', '<z>', '-a', '<x>'], [])
     CARET.build([])
     CARET.collapse()
+    print CARET
     print(CARET.match(['x', '-y', '-a', 1, 2]))

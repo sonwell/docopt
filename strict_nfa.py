@@ -18,16 +18,16 @@ class Node(object):
     def parse(self, tokens, prev):
         if not tokens:
             return DOLLAR.parse(tokens, prev)
-        for node in self.next + self.options:
-            res = node.parse(tokens, prev)
-            if res is not None:
-                return res
+#        for node in self.next + self.options:
+#            res = node.parse(tokens, prev)
+#            if res is not None:
+#                return res
         next = self.get(tokens)
         return next.parse(tokens, prev)
 
     def build(self, used):
-        if set(used) - set(self.options):
-            return
+#        if set(used) - set(self.options):
+#            return
         for option in self.options:
             if option not in used:
                 copy = option.copy()
@@ -100,6 +100,8 @@ class Node(object):
 class Literal(Node):
 
     def match(self, tokens):
+        if not tokens:
+            return None
         name = tokens.pop(0)
         if self.name == name:
             res = Node.match(self, tokens)
@@ -108,11 +110,14 @@ class Literal(Node):
                 return res
             res[name] = True
             return res
+        tokens.insert(0, name)
         return None
 
 class Variable(Node):
 
     def match(self, tokens):
+        if not tokens:
+            return None
         name = tokens.pop(0)
         res = Node.match(self, tokens)
         if res is None:
@@ -194,7 +199,7 @@ class Beginning(Command):
 
     def parse(self, tokens, prev):
         next, options = Node.parse(self, tokens, [])
-        self.options = options
+        self.options += options
         self.next.append(next)
         return self, []
 
@@ -204,7 +209,8 @@ DOLLAR = Terminus('$', {})
 
 if __name__ == '__main__':
     CARET.parse(['x', '-y', '<z>', '-a', '<x>'], [])
+    CARET.parse(['x', '<z>', '-a', '<x>'], [])
     CARET.build([])
     CARET.collapse()
     print CARET
-    print(CARET.match(['x', '-y', '-a', 1, 2]))
+    print(CARET.match(['x', '-a', 1, 2]))

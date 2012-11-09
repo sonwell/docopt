@@ -1,8 +1,19 @@
+from operator import attrgetter
+
 def _is_argument(name):
     return name[0] == '<' and name[-1] == '>' or name.isupper()
 
+
 def _is_option(name):
     return name[0] == '-' and name not in '--'
+
+
+class BranchBoundException(Exception):
+
+    '''
+    Thrown when we try to build through two mututually exclusive branches.
+    '''
+
 
 class Node(object):
 
@@ -15,30 +26,34 @@ class Node(object):
         self.proto = self
         self.repred = 0
 
-    def parse(self, tokens, prev):
+    def parse(self, tokens, prev, end):
         if not tokens:
-            return DOLLAR.parse(tokens, prev)
+            return end.parse(tokens, prev, end)
 #        for node in self.next + self.options:
-#            res = node.parse(tokens, prev)
+#            res = node.parse(tokens, prev, end)
 #            if res is not None:
 #                return res
         next = self.get(tokens)
-        return next.parse(tokens, prev)
+        return next.parse(tokens, prev, end)
 
     def build(self, used):
-#        if set(used) - set(self.options):
-#            return
+        if set(used[0]) - set(self.options):
+#            print self.name, used, self.options
+            raise ValueError
         for option in self.options:
-            if option not in used:
+            if option not in used[0]:
                 copy = option.copy()
                 new = self.copy()
-                new.build(used + [option])
+                try:
+                    Node.build(new, [used[0] + [option]] + used[1:])
+                except:
+                    continue
                 copy.follow += new.follow or [DOLLAR.copy()]
                 self.follow.append(copy)
         for node in self.next:
             copy = node.copy()
-            if copy not in self.follow:
-                self.follow.append(copy)
+#            if copy not in self.follow:
+            self.follow.append(copy)
             copy.build(used)
 
     def collapse(self):
@@ -54,8 +69,8 @@ class Node(object):
 
     def copy(self):
         copy = self.__class__(self.name, self.symbols)
-        copy.next = self.next
-        copy.options = self.options
+        copy.next = list(self.next)
+        copy.options = list(self.options)
         copy.proto = self.proto
         return copy
 
@@ -65,28 +80,31 @@ class Node(object):
     def get(self, tokens):
         name = tokens[0]
         if name in self.symbols:
-            return self.symbols[name].copy()
+            sym = self.symbols[name].copy()
+            sym.options = []
+            sym.next = []
+            return sym
         if _is_option(name):
             if len(name) > 2:
                 if name[1] == '-':  # -o<arg> format
                     name, arg = name[:2], name[2:]
-                    #tokens.insert(0, arg)
+                    tokens.insert(0, arg)
                 elif '=' in name:   # --long=<arg> format
                     name, args = name.split('=', 1)
-                    #tokens.insert(0, arg)
+                    tokens.insert(0, arg)
             sym = Option(name, self.symbols)
         elif _is_argument(name):
             sym = Argument(name, self.symbols)
         else:
-            sym = Command(name, self.symbols)
+            sym = Command(name, {})
         self.symbols[name] = sym
         return sym.copy()
 
     def __repr__(self):
-        cl = self.__class__.__name__
+        cl = '<%x>' % id(self.proto)  #self.__class__.__name__
         if self.repred < 4:
             self.repred += 1
-            items = self.follow
+            items = self.follow or self.next + self.options
             if items:
                 nexts = '\n  '.join('\n  '.join(repr(node).split('\n'))
                                                 for node in items)
@@ -130,12 +148,12 @@ class Argument(Variable):
 
     weight = 1
 
-    def parse(self, tokens, prev):
+    def parse(self, tokens, prev, end):
         if not tokens:
-            return DOLLAR.parse(tokens, prev)
+            return end.parse(tokens, prev, end)
         name = tokens.pop(0)
         if name == self.name:
-            next, options = Node.parse(self, tokens, prev)
+            next, options = Node.parse(self, tokens, prev, end)
             self.options = prev + options
             self.next.append(next)
             return self, options
@@ -147,29 +165,43 @@ class Command(Literal):
 
     weight = 2
 
-    def parse(self, tokens, prev):
+    def parse(self, tokens, prev, end):
         if not tokens:
-            return DOLLAR.parse(tokens, prev)
+            return end.parse(tokens, prev, end)
         name = tokens.pop(0)
         if name == self.name:
-            next, options = Node.parse(self, tokens, [])
+            next, options = Node.parse(self, tokens, [], end)
             self.options = options
             self.next.append(next)
-            return self, []
+            next, options = end.parse(tokens, prev, end)
+            return self, options
         tokens.insert(0, name)
         return None
+
+
+    def build(self, used):
+        Node.build(self, [[]] + used)
+
+
+class CommandEnd(Node):
+
+    def build(self, used):
+        Node.build(self, used[1:])
+
+    def parse(self, tokens, prev, end):
+        return self, []
 
 
 class Option(Literal):
 
     weight = 2
 
-    def parse(self, tokens, prev):
+    def parse(self, tokens, prev, end):
         if not tokens:
-            return DOLLAR.parse(tokens, prev)
+            return end.parse(tokens, prev, end)
         name = tokens.pop(0)
         if name == self.name:
-            next, options = Node.parse(self, tokens, prev + [self])
+            next, options = Node.parse(self, tokens, prev + [self], end)
             return next, [self] + options
         tokens.insert(0, name)
         return None
@@ -178,8 +210,9 @@ class Terminus(Command):
 
     weight = 3
 
-    def parse(self, tokens, prev):
-        self.options = prev
+    def parse(self, tokens, prev, end):
+        print prev
+        self.options += prev
         return self, []
 
     def collapse(self):
@@ -197,8 +230,8 @@ class Beginning(Command):
     def match(self, tokens):
         return Node.match(self, tokens)
 
-    def parse(self, tokens, prev):
-        next, options = Node.parse(self, tokens, [])
+    def parse(self, tokens, prev, end):
+        next, options = Node.parse(self, tokens, [], end)
         self.options += options
         self.next.append(next)
         return self, []
@@ -206,11 +239,11 @@ class Beginning(Command):
 
 CARET = Beginning('^', {})
 DOLLAR = Terminus('$', {})
-
+SORTER = attrgetter('weight')
 if __name__ == '__main__':
-    CARET.parse(['x', '-y', '<z>', '-a', '<x>'], [])
-    CARET.parse(['x', '<z>', '-a', '<x>'], [])
+    CARET.parse(['x', '-x', '<x>', 'x', '<x>'], [], DOLLAR.copy())
+#    CARET.parse(['x', '<z>', '-a', '<x>'], [], DOLLAR.copy())
     CARET.build([])
     CARET.collapse()
     print CARET
-    print(CARET.match(['x', '-a', 1, 2]))
+#    print(CARET.match(['x', '-a', 1, 2]))

@@ -1,5 +1,6 @@
 from __future__ import with_statement, print_function
-from operator import attrgetter
+__all__ = ['docopt']
+
 
 def _is_argument(name):
     return name[0] == '<' and name[-1] == '>' or name.isupper()
@@ -14,6 +15,7 @@ class DocoptLanguageError(SyntaxError):
     '''
     Thrown when the syntax is violated.
     '''
+
 
 class DocoptExit(SystemExit):
 
@@ -78,7 +80,7 @@ class Node(object):
     def copy(self):
         copy = self.__class__(self.name, self.symbols)
         copy.next = list(self.next)
-        copy.options = list(self.options)
+        copy.options = self.options
         copy.proto = self.proto
         return copy
 
@@ -109,17 +111,17 @@ class Node(object):
         return sym.copy()
 
     def __repr__(self):
-        cl = '<%x>' % id(self)  #self.__class__.__name__
+        cl = '<%x>' % id(self.options)
         if self.repred < 4:
             self.repred += 1
-            items = self.follow  #or self.next + self.options
+            items = self.follow
             if items:
                 nexts = '\n  '.join('\n  '.join(repr(node).split('\n'))
                                                 for node in items)
                 self.repred -= 1
-                return '%s(%r)\n  %s' % (cl, self.name, nexts) 
+                return '%s(%r)\n  %s' % (cl, self.name, nexts)
             self.repred -= 1
-            return '%s(%r)' % (cl, self.name) 
+            return '%s(%r)' % (cl, self.name)
         return '...'
 
 
@@ -139,6 +141,7 @@ class Literal(Node):
         tokens.insert(0, name)
         return None
 
+
 class Variable(Node):
 
     def match(self, tokens):
@@ -153,6 +156,7 @@ class Variable(Node):
         res[self.name] = name
         return res
 
+
 class Argument(Variable):
 
     weight = 1
@@ -163,7 +167,8 @@ class Argument(Variable):
         name = tokens.pop(0)
         if name == self.name:
             next, options = Node.parse(self, tokens, prev, end)
-            self.options = prev + options
+            self.options = prev
+            #self.options += options
             self.next.append(next)
             return self, options
         tokens.insert(0, name)
@@ -180,11 +185,12 @@ class Command(Literal):
         name = tokens.pop(0)
         if name == self.name:
             cend = CommandEnd('#' + name, self.symbols)
-            next, options = Node.parse(self, tokens, [], cend)
-            self.options += options
+            next, options = Node.parse(self, tokens, self.options, cend)
+            #self.options += options
             self.next.append(next)
             next, options = Node.parse(cend, tokens, prev, end)
-            cend.options = prev + options
+            cend.options = prev
+            cend.options += options
             cend.next.append(next)
             return self, options
         tokens.insert(0, name)
@@ -208,6 +214,9 @@ class CommandEnd(Node):
     def parse(self, tokens, prev, end):
         return self, []
 
+    def collapse(self):
+        return [node for f in self.follow for node in f.collapse()]
+
 
 class Option(Literal):
 
@@ -218,7 +227,8 @@ class Option(Literal):
             return end.parse(tokens, prev, end)
         name = tokens.pop(0)
         if name == self.name:
-            next, options = Node.parse(self, tokens, prev + [self], end)
+            prev += [self]
+            next, options = Node.parse(self, tokens, prev, end)
             return next, [self] + options
         tokens.insert(0, name)
         return None
@@ -245,10 +255,10 @@ class Beginning(Command):
         return Node.match(self, tokens)
 
     def parse(self, tokens, prev, end):
-        next, options = Node.parse(self, tokens, [], end.copy())
-        self.options += options
+        next, options = Node.parse(self, tokens, self.options, end.copy())
+        #self.options += options
         self.next.append(next)
-        return self, []
+        return self, options
 
 
 class Parser(object):
@@ -263,6 +273,7 @@ class Parser(object):
             self.caret.parse(tokens, [], self.dollar)
         self.caret.build([])
         self.caret.collapse()
+        print(self.caret)
         return self.caret.match(args[-1])
 
     def __enter__(self):
@@ -284,4 +295,4 @@ docopt = Parser()
 if __name__ == '__main__':
     print(docopt(['y', '-y', '<y>', 'x', '<x>'],
                  ['y', '<y>', 'x', '<x>'],
-                 ['y', 1, 'x', 2]))
+                 ['y', 1, 'x', 2, '-y']))

@@ -46,6 +46,10 @@ class Node(object):
     def build(self, used):
         if set(used[0]) - set(self.options):
             return
+        self._build_options(used)
+        self._build_nodes(used)
+
+    def _build_options(self, used):
         for option in self.options:
             if option not in used[0]:
                 copy = option.copy()
@@ -53,11 +57,10 @@ class Node(object):
                 Node.build(new, [used[0] + [option]] + used[1:])
                 copy.follow += new.follow
                 self.follow.append(copy)
-#        if set(used[0]) ^ set(self.options):
-#            return
+
+    def _build_nodes(self, used):
         for node in self.next:
             copy = node.copy()
-#            if copy not in self.follow:
             self.follow.append(copy)
             copy.build(used)
 
@@ -196,19 +199,10 @@ class CommandEnd(Node):
         used = used[1:]
         if len(used) < 1 or set(used[0]) - set(self.options):
             return
-        for option in self.options:
-            if option not in used[0]:
-                copy = option.copy()
-                new = self.copy()
-                Node.build(new, [used[0] + [option]] + used[1:])
-                copy.follow += new.follow
-                self.follow.append(copy)
+        self._build_options(used)
         if set(used[0]) ^ set(self.options):
             return
-        for node in self.next:
-            copy = node.copy()
-            self.follow.append(copy)
-            copy.build(used)
+        self._build_nodes(used)
 
     def parse(self, tokens, prev, end):
 #        self.options += prev

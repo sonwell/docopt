@@ -7,7 +7,7 @@ def _is_argument(name):
 
 
 def _is_option(name):
-    return name[0] == '-' and name not in '--'
+    return name[0] == '-' and str(name) not in '--'
 
 
 class DocoptLanguageError(SyntaxError):
@@ -24,6 +24,57 @@ class DocoptExit(SystemExit):
     '''
 
 
+class Token(object):
+
+    def __init__(self, value, source, row, col):
+        self.value = value
+        self.source = source
+        self.row = row
+        self.col = col
+
+    def __eq__(self, other):
+        return self.value == other
+
+    def __len__(self):
+        return len(self.value)
+
+    def __repr__(self):
+        tildes = '~' * (self.col - 1)
+        carets = '^' * len(self.value)
+        fmt = '%r on line %d:\n%s\n\033[33;1m' + tildes + carets + '\033[0m'
+        return fmt % (self.value, self.row, self.source)
+
+    def __str__(self):
+        return self.value
+
+    def __getitem__(self, item):
+        return self.value.__getitem__(item)
+
+    def __radd__(self, other):
+        other += self.value
+
+    def error(self, message):
+        raise DocoptLanguageError('\n%s %r' % (message, self))
+
+    def isupper(self):
+        return self.value.isupper()
+
+    @classmethod
+    def ize(klass, source):
+        bits = source.split()
+        using = source
+        lineno = 1
+        tokens = []
+        offset = 0
+        for bit in bits:
+            p = using.find(bit)
+            lineno += using[:p].count('\n')
+            tokens.append(Token(bit, source, lineno, offset + p + 1))
+            offset += p + len(bit)
+            using = using[p + len(bit):]
+        return tokens
+
+
 class Node(object):
 
     def __init__(self, name, symbols):
@@ -38,10 +89,22 @@ class Node(object):
     def parse(self, tokens, prev, end):
         if not tokens:
             return end.parse(tokens, prev, end)
-#        for node in self.next + self.options:
-#            res = node.parse(tokens, prev, end)
-#            if res is not None:
-#                return res
+        token = tokens[0]
+        if str(token) in '|)':
+            self.next.append(end)
+            return self, []
+        elif token == '(':
+            start = Epsilon()
+            stop = Epsilon()
+            token = '|'
+            while token == '|':
+                tokens.pop(0)
+                next, options = Node.parse(start, tokens, list(prev), stop)
+                start.next.append(next)
+                prev += options
+            if token != ')':
+                raise DocoptLanguageError()
+            tokens.pop()
         next = self.get(tokens)
         return next.parse(tokens, prev, end)
 
@@ -89,6 +152,10 @@ class Node(object):
 
     def get(self, tokens):
         name = tokens[0]
+#        for node in self.next + self.options:
+#            res = node.parse(tokens, prev, end)
+#            if res is not None:
+#                return res
         if name in self.symbols:
             sym = self.symbols[name].copy()
             sym.options = []
@@ -117,12 +184,16 @@ class Node(object):
             items = self.follow
             if items:
                 nexts = '\n  '.join('\n  '.join(repr(node).split('\n'))
-                                                for node in items)
+                                    for node in items)
                 self.repred -= 1
-                return '%s(%r)\n  %s' % (cl, self.name, nexts)
+                return "%s('%s')\n  %s" % (cl, self.name, nexts)
             self.repred -= 1
-            return '%s(%r)' % (cl, self.name)
+            return "%s('%s')" % (cl, self.name)
         return '...'
+
+
+class Epsilon(Node):
+    pass
 
 
 class Literal(Node):
@@ -136,7 +207,7 @@ class Literal(Node):
             if res is None:
                 tokens.insert(0, name)
                 return res
-            res[name] = True
+            res[str(name)] = True
             return res
         tokens.insert(0, name)
         return None
@@ -153,7 +224,7 @@ class Variable(Node):
             tokens.insert(0, name)
             return res
         tokens.insert(0, name)
-        res[self.name] = name
+        res[str(self.name)] = name
         return res
 
 
@@ -168,7 +239,6 @@ class Argument(Variable):
         if name == self.name:
             next, options = Node.parse(self, tokens, prev, end)
             self.options = prev
-            #self.options += options
             self.next.append(next)
             return self, options
         tokens.insert(0, name)
@@ -185,12 +255,10 @@ class Command(Literal):
         name = tokens.pop(0)
         if name == self.name:
             cend = CommandEnd('#' + name, self.symbols)
-            next, options = Node.parse(self, tokens, self.options, cend)
-            #self.options += options
+            cend.options = prev
+            next, _ = Node.parse(self, tokens, self.options, cend)
             self.next.append(next)
             next, options = Node.parse(cend, tokens, prev, end)
-            cend.options = prev
-            cend.options += options
             cend.next.append(next)
             return self, options
         tokens.insert(0, name)
@@ -227,9 +295,8 @@ class Option(Literal):
             return end.parse(tokens, prev, end)
         name = tokens.pop(0)
         if name == self.name:
-            prev += [self]
-            next, options = Node.parse(self, tokens, prev, end)
-            return next, [self] + options
+            prev.append(self)
+            return Node.parse(self, tokens, prev, end)
         tokens.insert(0, name)
         return None
 
@@ -256,16 +323,18 @@ class Beginning(Command):
 
     def parse(self, tokens, prev, end):
         next, options = Node.parse(self, tokens, self.options, end.copy())
-        #self.options += options
         self.next.append(next)
         return self, options
 
 
 class Parser(object):
 
+    CARET_TOKEN = Token('^', '^', 0, 0)
+    DOLLAR_TOKEN = Token('$', '$', 0, 0)
+
     def __init__(self):
-        self.caret = Beginning('^', {})
-        self.dollar = Terminus('$', {})
+        self.caret = Beginning(self.CARET_TOKEN, {})
+        self.dollar = Terminus(self.DOLLAR_TOKEN, {})
         self.schema = []
 
     def __call__(self, *args):
@@ -293,6 +362,6 @@ class Parser(object):
 
 docopt = Parser()
 if __name__ == '__main__':
-    print(docopt(['y', '-y', '<y>', 'x', '<x>'],
-                 ['y', '<y>', 'x', '<x>'],
+    print(docopt(Token.ize('y -y <y> x <x>'),
+                 Token.ize('y <y> x <x>'),
                  ['y', 1, 'x', 2, '-y']))

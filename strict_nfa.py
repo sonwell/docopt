@@ -147,8 +147,9 @@ class Variable(Node):
         name = tokens.pop(0)
         res = Node.match(self, tokens)
         if res is None:
-            tokens.insert(0, tokens)
+            tokens.insert(0, name)
             return res
+        tokens.insert(0, name)
         res[self.name] = name
         return res
 
@@ -205,12 +206,7 @@ class CommandEnd(Node):
         self._build_nodes(used)
 
     def parse(self, tokens, prev, end):
-#        self.options += prev
         return self, []
-
-#    def collapse(self):
-#        print self.follow
-#        return [node for f in self.follow for node in f.collapse()]
 
 
 class Option(Literal):
@@ -232,13 +228,9 @@ class Terminus(CommandEnd):
 
     weight = 3
 
-#    def parse(self, tokens, prev, end):
-#        self.options += prev
-#        return self, []
-
     def collapse(self):
         if self.follow:  # stuff follows this "Terminus"
-            return [self.proto]
+            return []
         return [self.proto]  # this is an accepting state of the NFA
 
     def match(self, tokens):
@@ -266,11 +258,12 @@ class Parser(object):
         self.dollar = Terminus('$', {})
         self.schema = []
 
-    def __call__(self, tokens, args):
-        self.caret.parse(tokens, [], self.dollar)
+    def __call__(self, *args):
+        for tokens in args[:-1]:
+            self.caret.parse(tokens, [], self.dollar)
         self.caret.build([])
         self.caret.collapse()
-        return self.caret.match(args)
+        return self.caret.match(args[-1])
 
     def __enter__(self):
         self.schema.insert(0, [])
@@ -290,4 +283,5 @@ class Parser(object):
 docopt = Parser()
 if __name__ == '__main__':
     print(docopt(['y', '-y', '<y>', 'x', '<x>'],
-                 ['y', '-y', '<y>', 'x', '<x>']))
+                 ['y', '<y>', 'x', '<x>'],
+                 ['y', 1, 'x', 2]))

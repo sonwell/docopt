@@ -1,3 +1,4 @@
+from __future__ import with_statement, print_function
 from operator import attrgetter
 
 def _is_argument(name):
@@ -8,10 +9,16 @@ def _is_option(name):
     return name[0] == '-' and name not in '--'
 
 
-class BranchBoundException(Exception):
+class DocoptLanguageError(SyntaxError):
 
     '''
-    Thrown when we try to build through two mututually exclusive branches.
+    Thrown when the syntax is violated.
+    '''
+
+class DocoptExit(SystemExit):
+
+    '''
+    Thrown to exit the program (e.g., after --version or -h).
     '''
 
 
@@ -38,18 +45,16 @@ class Node(object):
 
     def build(self, used):
         if set(used[0]) - set(self.options):
-#            print self.name, used, self.options
-            raise ValueError
+            return
         for option in self.options:
             if option not in used[0]:
                 copy = option.copy()
                 new = self.copy()
-                try:
-                    Node.build(new, [used[0] + [option]] + used[1:])
-                except:
-                    continue
-                copy.follow += new.follow or [DOLLAR.copy()]
+                Node.build(new, [used[0] + [option]] + used[1:])
+                copy.follow += new.follow
                 self.follow.append(copy)
+#        if set(used[0]) ^ set(self.options):
+#            return
         for node in self.next:
             copy = node.copy()
 #            if copy not in self.follow:
@@ -101,10 +106,10 @@ class Node(object):
         return sym.copy()
 
     def __repr__(self):
-        cl = '<%x>' % id(self.proto)  #self.__class__.__name__
+        cl = '<%x>' % id(self)  #self.__class__.__name__
         if self.repred < 4:
             self.repred += 1
-            items = self.follow or self.next + self.options
+            items = self.follow  #or self.next + self.options
             if items:
                 nexts = '\n  '.join('\n  '.join(repr(node).split('\n'))
                                                 for node in items)
@@ -170,14 +175,16 @@ class Command(Literal):
             return end.parse(tokens, prev, end)
         name = tokens.pop(0)
         if name == self.name:
-            next, options = Node.parse(self, tokens, [], end)
-            self.options = options
+            cend = CommandEnd('#' + name, self.symbols)
+            next, options = Node.parse(self, tokens, [], cend)
+            self.options += options
             self.next.append(next)
-            next, options = end.parse(tokens, prev, end)
+            next, options = Node.parse(cend, tokens, prev, end)
+            cend.options = prev + options
+            cend.next.append(next)
             return self, options
         tokens.insert(0, name)
         return None
-
 
     def build(self, used):
         Node.build(self, [[]] + used)
@@ -186,10 +193,30 @@ class Command(Literal):
 class CommandEnd(Node):
 
     def build(self, used):
-        Node.build(self, used[1:])
+        used = used[1:]
+        if len(used) < 1 or set(used[0]) - set(self.options):
+            return
+        for option in self.options:
+            if option not in used[0]:
+                copy = option.copy()
+                new = self.copy()
+                Node.build(new, [used[0] + [option]] + used[1:])
+                copy.follow += new.follow
+                self.follow.append(copy)
+        if set(used[0]) ^ set(self.options):
+            return
+        for node in self.next:
+            copy = node.copy()
+            self.follow.append(copy)
+            copy.build(used)
 
     def parse(self, tokens, prev, end):
+#        self.options += prev
         return self, []
+
+#    def collapse(self):
+#        print self.follow
+#        return [node for f in self.follow for node in f.collapse()]
 
 
 class Option(Literal):
@@ -206,22 +233,23 @@ class Option(Literal):
         tokens.insert(0, name)
         return None
 
-class Terminus(Command):
+
+class Terminus(CommandEnd):
 
     weight = 3
 
-    def parse(self, tokens, prev, end):
-        print prev
-        self.options += prev
-        return self, []
+#    def parse(self, tokens, prev, end):
+#        self.options += prev
+#        return self, []
 
     def collapse(self):
         if self.follow:  # stuff follows this "Terminus"
-            return self.follow
-        return [DOLLAR]  # this is an accepting state of the NFA
+            return [self.proto]
+        return [self.proto]  # this is an accepting state of the NFA
 
     def match(self, tokens):
         return {} if not tokens else None
+
 
 class Beginning(Command):
 
@@ -231,19 +259,41 @@ class Beginning(Command):
         return Node.match(self, tokens)
 
     def parse(self, tokens, prev, end):
-        next, options = Node.parse(self, tokens, [], end)
+        next, options = Node.parse(self, tokens, [], end.copy())
         self.options += options
         self.next.append(next)
         return self, []
 
 
-CARET = Beginning('^', {})
-DOLLAR = Terminus('$', {})
-SORTER = attrgetter('weight')
+class Parser(object):
+
+    def __init__(self):
+        self.caret = Beginning('^', {})
+        self.dollar = Terminus('$', {})
+        self.schema = []
+
+    def __call__(self, tokens, args):
+        self.caret.parse(tokens, [], self.dollar)
+        self.caret.build([])
+        self.caret.collapse()
+        return self.caret.match(args)
+
+    def __enter__(self):
+        self.schema.insert(0, [])
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.schema.pop(0)
+        return False  # allow the propagation of exceptions
+
+    def validate(self, tokens):
+        def decorator(fun):
+            self.schema.append((tokens, fun))
+            return fun
+        return decorator
+
+
+docopt = Parser()
 if __name__ == '__main__':
-    CARET.parse(['x', '-x', '<x>', 'x', '<x>'], [], DOLLAR.copy())
-#    CARET.parse(['x', '<z>', '-a', '<x>'], [], DOLLAR.copy())
-    CARET.build([])
-    CARET.collapse()
-    print CARET
-#    print(CARET.match(['x', '-a', 1, 2]))
+    print(docopt(['y', '-y', '<y>', 'x', '<x>'],
+                 ['y', '-y', '<y>', 'x', '<x>']))

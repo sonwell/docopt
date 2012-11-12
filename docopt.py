@@ -354,7 +354,7 @@ class Parser(object):
     DOLLAR_TOKEN = Token('$', '$', 0, 0)
 
     def __init__(self):
-        self.schema = []
+        self.schema = [[]]
         self.usage = []
 
     def __call__(self, doc, args=None):

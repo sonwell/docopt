@@ -1,0 +1,93 @@
+#!/usr/bin/env python
+'''
+docoptc version 0.0.1
+
+This document is currently for instructive value only, and is merely one
+person's dream for validation in docopt. The current NFA branch implementation
+does not accept all the inputs the reference implementation does (and probably
+never will, by design).
+
+Usage:
+    docoptc -l<lang> [-D<macro>...] <files>...
+    docoptc --help | -h | --version
+
+Options:
+    -l<lang>        Compile to the given language. Supported languages include:
+                    Python, Ruby, Lua, CoffeeScript, C.
+    -D<macro>...    Define a preprocessor macro for C.
+
+Arguments:
+    <files>...      A list of files to be used for compilation.
+'''
+
+
+raise NotImplementedError('\n' + __doc__.split('\n\n')[1])
+LANGUAGES = 'ruby python lua c coffeescript dot'
+from docopt import docopt
+import sys
+
+
+
+
+def run(language, macros, descriptors):
+    # popen, etc.
+    pass
+
+
+@docopt.validate('-l<lang> [-D<macro>...] <files>...')
+def compile(lang, macros, files):
+
+    '''
+    In this example, <lang> is expected to yield a single value (no ellipsis),
+    whereas <macro> and <files> are both expected to yield arrays (or maybe
+    None). Only arguments in the spec will yield values to the function, but
+    you should be able to be as specific as you like to gather just the values
+    you are interested in.
+
+    If the pattern passed to docopt defines certain things as repeatable but
+    the spec does not mark them as such, the function should be called each
+    time a legal input is parsed that matches the spec.
+
+    Order of the variables within the spec determines order of the values
+    passed to the function. You should be able to use the validate decorator
+    to transform the values from the command line into something easier to
+    handle further down the line:
+
+        @docopt.validate('INPUT')  # caps style is fine too
+        def open_for_reading(file):
+            if file == '-':
+                return sys.stdin
+            return open(file, 'r')
+
+    Return value order will have to be the same order as values are passed.
+
+    Other considerations:
+        matching everything?
+        matching any argument?
+        matching any command?
+        matching any option?
+    '''
+
+    if lang.lower() not in LANGUAGES:
+        raise ValueError(lang + ' is not a supported language.')
+    for file in files:
+        try:
+            fh = open(file, 'r')
+        except IOError:
+            sys.stderr.write(
+                'Cannot open %s for reading. Skipping.' % file
+            )
+        else:
+            descriptors.append(fh)
+    run(lang, macros, descriptors)
+
+
+if __name__ == '__main__':
+    '''
+    We can use multiple validation schemas at once by using the with statement.
+    Entering a new context will generate a blank slate as far as schemas are
+    concerned and exiting the context will return to the previous schema.
+    Initially there is a blank schema so we don't have to use the with
+    statement if we just want to use a single schema.
+    '''
+    docopt(__doc__)

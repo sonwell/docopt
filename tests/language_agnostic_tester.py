@@ -747,14 +747,17 @@ $ prog go left --speed=5  go right --speed=9
 {"go": 2, "<direction>": ["left", "right"], "--speed": ["5", "9"]}
 
 '''
-import sys, json, re
+import sys
+import json
+import re
 from subprocess import Popen, PIPE, STDOUT
 
 # remove comments
 __doc__ = re.sub('#.*$', '', __doc__, flags=re.M)
 
 testee = (sys.argv[1] if len(sys.argv) >= 2 else
-        exit('Usage: language_agnostic_tester.py ./path/to/executable/testee [ID ...]'))
+          exit('Usage: language_agnostic_tester.py ' +
+               './path/to/executable/testee [ID ...]'))
 ids = [int(x) for x in sys.argv[2:]] if len(sys.argv) > 2 else None
 summary = ''
 

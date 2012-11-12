@@ -2,7 +2,6 @@ import re
 import sys
 import curses
 curses.setupterm()
-__all__ = ['docopt']
 
 
 def _is_argument(name):
@@ -79,7 +78,6 @@ class Node(object):
         self.repred = 0
         self.collapsed = False
         self.required = True
-        self.sought = False
 
     def parse(self, tokens, prev, head, tail):
         if not tokens:
@@ -88,74 +86,77 @@ class Node(object):
         if str(token) in '|)]':
             return tail, []
         elif str(token) in '[(':
-            start = Epsilon('', self.symbols)
-            stop = Epsilon('', self.symbols)
-            start.options = stop.options = prev
-            optional, closing = token == '[', {'(': ')', '[': ']'}[str(token)]
-            appended, all_opts, token = [], [], '|'
-            while token == '|':
-                tokens.pop(0)
-                # The self in the next line allows weird things like
-                # /[\(\|]\.{3}/. Change to None to make this a syntax error.
-                next, opts = Node.parse(start, tokens, list(prev), self, stop)
-                start.next.append(next)
-                appended.append(next)
-                all_opts += opts
-                token = tokens[0]
-            if token != closing:
-                token.error("Expected %r, saw" % closing)
-            if optional and stop not in start.next:
-                start.next.append(stop)
-            for opt in all_opts:
-                opt.required = optional
-            prev += all_opts
-            tokens.pop(0)
-            next, options = Node.parse(stop, tokens, prev, start, tail)
-            stop.next.append(next)
-            for node in appended:
-                node.options += options
-            return start, options
+            return self._parse_group(tokens, prev, head, tail)
         elif token == '...':
             if head is None:
                 token.error('Unexpected token')
             tokens.pop(0)
-            self.follow.append(head)
+            self.next.append(head)
             return Node.parse(self, tokens, prev, head, tail)
+        elif token == 'options':
+            token.error("'options' directive is currently unsupported:")
         next = self.get(tokens)
         return next.parse(tokens, prev, self, tail)
 
-    def build(self, used):
-        if not used or set(used[0]) - set(self.options):
-            return
-        self._build_options(used)
-        self._build_nodes(used)
+    def _parse_group(self, tokens, prev, head, tail):
+        token = tokens[0]
+        start = Epsilon('', self.symbols)
+        stop = Epsilon('', self.symbols)
+        start.options = stop.options = prev
+        optional, closing = token == '[', {'(': ')', '[': ']'}[str(token)]
+        appended, all_opts, token = [], [], '|'
+        while token == '|':
+            tokens.pop(0)
+            next, opts = Node.parse(start, tokens, list(prev), self, stop)
+            start.next.append(next)
+            appended.append(next)
+            all_opts += opts
+            token = tokens[0]
+        if token != closing:
+            token.error("Expected %r, saw" % closing)
+        if optional and stop not in start.next:
+            start.next.append(stop)
+        for opt in all_opts:
+            opt.required = optional
+        tokens.pop(0)
+        prev += all_opts
+        next, options = Node.parse(stop, tokens, prev, start, tail)
+        stop.next.append(next)
+        for node in appended:
+            node.options += options
+        return start, options + all_opts
 
-    def _build_options(self, used):
-        for option in self.options:
+    def build(self, used, allowed):
+        allowed = [option for option in allowed if option in self.options]
+        if not used or set(used[0]) - set(allowed):
+            return
+        self._build_options(used, allowed)
+        self._build_nodes(used, allowed)
+
+    def _build_options(self, used, allowed):
+        for option in allowed:
             if option not in used[0]:
                 copy = option.copy()
                 new = self.copy()
-                Node.build(new, [used[0] + [option]] + used[1:])
+                Node.build(new, [used[0] + [option]] + used[1:], allowed)
                 copy.follow += new.follow
                 self.follow.append(copy)
 
-    def _build_nodes(self, used):
-        required = set(opt for opt in self.options if opt.required)
+    def _build_nodes(self, used, allowed):
+        required = set(opt for opt in allowed if opt.required)
         skip_ends = required - set(used[0])
         for node in self.next:
             if isinstance(node, CommandEnd) and skip_ends:
                 continue
             copy = node.copy()
-            copy.build(used)
+            copy.build(used, allowed)
             self.follow.append(copy)
 
     def collapse(self):
         if not self.collapsed:
-            self.collapsed = True
-            self.follow = [node for f in self.follow
-                           for node in f.collapse()]
-            return [self]
-        return [self]
+            #self.collapsed = True
+            self.follow = [node for f in self.follow for node in f.collapse()]
+        return [self] if self.follow else []
 
     def match(self, tokens):
         for node in self.follow:
@@ -177,10 +178,6 @@ class Node(object):
 
     def get(self, tokens):
         name = tokens[0]
-#        for node in self.next + self.options:
-#            res = node.parse(tokens, prev, ...)
-#            if res is not None:
-#                return res
         if name in self.symbols:
             sym = self.symbols[name].copy()
             sym.options = []
@@ -206,7 +203,7 @@ class Node(object):
         cl = '<%x>' % id(self.options)
         if self.repred < 4:
             self.repred += 1
-            items = self.follow or  self.next + self.options
+            items = self.follow
             if items:
                 nexts = '\n  '.join('\n  '.join(repr(node).split('\n'))
                                     for node in items)
@@ -221,14 +218,15 @@ class Epsilon(Node):
 
     def collapse(self):
         if not self.collapsed:
-            self.collapsed = True
+            #self.collapsed = True
             return [node for f in self.follow for node in f.collapse()]
         return []
 
-    def build(self, used):
-        if set(used[0]) - set(self.options):
+    def build(self, used, allowed):
+        allowed = [option for option in allowed if option in self.options]
+        if set(used[0]) - set(allowed):
             return
-        self._build_nodes(used)
+        self._build_nodes(used, allowed)
 
 
 class Literal(Node):
@@ -282,7 +280,11 @@ class Command(Literal):
             return tail.parse(tokens, prev, head, tail)
         name = tokens.pop(0)
         if name == self.name:
-            end = CommandEnd('#' + name, self.symbols)
+            col = self.name.col
+            src = self.name.source
+            token = Token('#' + name, src[:col] + '#' + src[col:],
+                          self.name.row, self.name.col)
+            end = CommandEnd(token, self.symbols)
             end.options = prev
             next, _ = Node.parse(self, tokens, self.options, self, end)
             self.next.append(next)
@@ -295,14 +297,14 @@ class Command(Literal):
         tokens.insert(0, name)
         return None
 
-    def build(self, used):
-        Node.build(self, [[]] + used)
+    def build(self, used, allowed):
+        Node.build(self, [[]] + used, self.options)
 
 
 class CommandEnd(Epsilon):
 
-    def build(self, used):
-        Node.build(self, used[1:])
+    def build(self, used, allowed):
+        Node.build(self, used[1:], self.options)
 
     def parse(self, tokens, prev, head, tail):
         return self, []
@@ -353,6 +355,7 @@ class Parser(object):
 
     def __init__(self):
         self.schema = []
+        self.usage = []
 
     def __call__(self, doc, args=None):
         if args is None:
@@ -369,6 +372,7 @@ class Parser(object):
 
     def _to_nfa(self, doc):
         lexer = Lexer(doc)
+        self.usage.insert(0, lexer.usage)
         caret = Beginning(self.CARET_TOKEN, {})
         dollar = Terminus(self.DOLLAR_TOKEN, {})
         try:
@@ -376,9 +380,8 @@ class Parser(object):
                 caret.parse(tokens, [], None, dollar)
         except DocoptLanguageError as e:
             raise DocoptExit(e.message)
-        caret.build([])
+        caret.build([], None)
         caret.collapse()
-        print caret
         return caret
 
     def validate(self, tokens):
@@ -386,10 +389,6 @@ class Parser(object):
             self.schema.append((tokens, fun))
             return fun
         return decorator
-
-    def compile(self, doc, target=None, lang=None):
-        if not target or not lang:
-            return
 
 
 class Lexer(object):
@@ -452,7 +451,11 @@ class Lexer(object):
 
 docopt = Parser()
 test = '''
-       Usage: prog x (1|2)
+       Usage: prog x [-y 1 3 5 | 2 4 6]
        '''
 if __name__ == '__main__':
-    print docopt(test, 'x 2'.split())
+    args = docopt(test, sys.argv[1:])
+    if args is None:
+        print docopt.usage[0]
+    else:
+        print args

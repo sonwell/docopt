@@ -1,4 +1,7 @@
-from __future__ import with_statement, print_function
+import re
+import sys
+import curses
+curses.setupterm()
 __all__ = ['docopt']
 
 
@@ -12,16 +15,12 @@ def _is_option(name):
 
 class DocoptLanguageError(SyntaxError):
 
-    '''
-    Thrown when the syntax is violated.
-    '''
+    '''Thrown when the syntax is violated.'''
 
 
 class DocoptExit(SystemExit):
 
-    '''
-    Thrown to exit the program (e.g., after --version or -h).
-    '''
+    '''Thrown to exit the program (e.g., after --version or -h).'''
 
 
 class Token(object):
@@ -35,14 +34,22 @@ class Token(object):
     def __eq__(self, other):
         return self.value == other
 
+    def __ne__(self, other):
+        return self.value != other
+
     def __len__(self):
         return len(self.value)
 
     def __repr__(self):
-        tildes = '~' * (self.col - 1)
-        carets = '^' * len(self.value)
-        fmt = '%r on line %d:\n%s\n\033[33;1m' + tildes + carets + '\033[0m'
-        return fmt % (self.value, self.row, self.source)
+        setf = curses.tigetstr('setaf') or curses.tigetstr('setf')
+        normal = curses.tigetstr('sgr0')
+        underline = curses.tigetstr('smul')
+        yellow = curses.tparm(setf, curses.COLOR_RED)
+        start, end = self.col, self.col + len(self.value)
+        highlight = self.source[:start] + underline + yellow + \
+            self.value + normal + self.source[end:]
+        fmt = '%r on line %d:\n%s'
+        return fmt % (self.value, self.row, highlight)
 
     def __str__(self):
         return self.value
@@ -51,28 +58,13 @@ class Token(object):
         return self.value.__getitem__(item)
 
     def __radd__(self, other):
-        other += self.value
+        return other + self.value
 
     def error(self, message):
-        raise DocoptLanguageError('\n%s %r' % (message, self))
+        raise DocoptLanguageError('%s %r' % (message, self))
 
     def isupper(self):
         return self.value.isupper()
-
-    @classmethod
-    def ize(klass, source):
-        bits = source.split()
-        using = source
-        lineno = 1
-        tokens = []
-        offset = 0
-        for bit in bits:
-            p = using.find(bit)
-            lineno += using[:p].count('\n')
-            tokens.append(Token(bit, source, lineno, offset + p + 1))
-            offset += p + len(bit)
-            using = using[p + len(bit):]
-        return tokens
 
 
 class Node(object):
@@ -85,31 +77,55 @@ class Node(object):
         self.symbols = symbols
         self.proto = self
         self.repred = 0
+        self.collapsed = False
+        self.required = True
+        self.sought = False
 
-    def parse(self, tokens, prev, end):
+    def parse(self, tokens, prev, head, tail):
         if not tokens:
-            return end.parse(tokens, prev, end)
+            return tail.parse(tokens, prev, head, tail)
         token = tokens[0]
-        if str(token) in '|)':
-            self.next.append(end)
-            return self, []
-        elif token == '(':
-            start = Epsilon()
-            stop = Epsilon()
-            token = '|'
+        if str(token) in '|)]':
+            return tail, []
+        elif str(token) in '[(':
+            start = Epsilon('', self.symbols)
+            stop = Epsilon('', self.symbols)
+            start.options = stop.options = prev
+            optional, closing = token == '[', {'(': ')', '[': ']'}[str(token)]
+            appended, all_opts, token = [], [], '|'
             while token == '|':
                 tokens.pop(0)
-                next, options = Node.parse(start, tokens, list(prev), stop)
+                # The self in the next line allows weird things like
+                # /[\(\|]\.{3}/. Change to None to make this a syntax error.
+                next, opts = Node.parse(start, tokens, list(prev), self, stop)
                 start.next.append(next)
-                prev += options
-            if token != ')':
-                raise DocoptLanguageError()
-            tokens.pop()
+                appended.append(next)
+                all_opts += opts
+                token = tokens[0]
+            if token != closing:
+                token.error("Expected %r, saw" % closing)
+            if optional and stop not in start.next:
+                start.next.append(stop)
+            for opt in all_opts:
+                opt.required = optional
+            prev += all_opts
+            tokens.pop(0)
+            next, options = Node.parse(stop, tokens, prev, start, tail)
+            stop.next.append(next)
+            for node in appended:
+                node.options += options
+            return start, options
+        elif token == '...':
+            if head is None:
+                token.error('Unexpected token')
+            tokens.pop(0)
+            self.follow.append(head)
+            return Node.parse(self, tokens, prev, head, tail)
         next = self.get(tokens)
-        return next.parse(tokens, prev, end)
+        return next.parse(tokens, prev, self, tail)
 
     def build(self, used):
-        if set(used[0]) - set(self.options):
+        if not used or set(used[0]) - set(self.options):
             return
         self._build_options(used)
         self._build_nodes(used)
@@ -124,13 +140,21 @@ class Node(object):
                 self.follow.append(copy)
 
     def _build_nodes(self, used):
+        required = set(opt for opt in self.options if opt.required)
+        skip_ends = required - set(used[0])
         for node in self.next:
+            if isinstance(node, CommandEnd) and skip_ends:
+                continue
             copy = node.copy()
-            self.follow.append(copy)
             copy.build(used)
+            self.follow.append(copy)
 
     def collapse(self):
-        self.follow = [node for f in self.follow for node in f.collapse()]
+        if not self.collapsed:
+            self.collapsed = True
+            self.follow = [node for f in self.follow
+                           for node in f.collapse()]
+            return [self]
         return [self]
 
     def match(self, tokens):
@@ -145,6 +169,7 @@ class Node(object):
         copy.next = list(self.next)
         copy.options = self.options
         copy.proto = self.proto
+        copy.required = self.required
         return copy
 
     def __eq__(self, other):
@@ -153,7 +178,7 @@ class Node(object):
     def get(self, tokens):
         name = tokens[0]
 #        for node in self.next + self.options:
-#            res = node.parse(tokens, prev, end)
+#            res = node.parse(tokens, prev, ...)
 #            if res is not None:
 #                return res
         if name in self.symbols:
@@ -163,8 +188,8 @@ class Node(object):
             return sym
         if _is_option(name):
             if len(name) > 2:
-                if name[1] == '-':  # -o<arg> format
-                    name, arg = name[:2], name[2:]
+                if name[1] == '-':  # -stacked format
+                    name, arg = name[:2], '-' + name[2:]
                     tokens.insert(0, arg)
                 elif '=' in name:   # --long=<arg> format
                     name, args = name.split('=', 1)
@@ -181,7 +206,7 @@ class Node(object):
         cl = '<%x>' % id(self.options)
         if self.repred < 4:
             self.repred += 1
-            items = self.follow
+            items = self.follow or  self.next + self.options
             if items:
                 nexts = '\n  '.join('\n  '.join(repr(node).split('\n'))
                                     for node in items)
@@ -193,7 +218,17 @@ class Node(object):
 
 
 class Epsilon(Node):
-    pass
+
+    def collapse(self):
+        if not self.collapsed:
+            self.collapsed = True
+            return [node for f in self.follow for node in f.collapse()]
+        return []
+
+    def build(self, used):
+        if set(used[0]) - set(self.options):
+            return
+        self._build_nodes(used)
 
 
 class Literal(Node):
@@ -213,7 +248,7 @@ class Literal(Node):
         return None
 
 
-class Variable(Node):
+class Argument(Node):
 
     def match(self, tokens):
         if not tokens:
@@ -227,17 +262,12 @@ class Variable(Node):
         res[str(self.name)] = name
         return res
 
-
-class Argument(Variable):
-
-    weight = 1
-
-    def parse(self, tokens, prev, end):
+    def parse(self, tokens, prev, head, tail):
         if not tokens:
-            return end.parse(tokens, prev, end)
+            return tail.parse(tokens, prev, head, tail)
         name = tokens.pop(0)
         if name == self.name:
-            next, options = Node.parse(self, tokens, prev, end)
+            next, options = Node.parse(self, tokens, prev, self, tail)
             self.options = prev
             self.next.append(next)
             return self, options
@@ -247,19 +277,20 @@ class Argument(Variable):
 
 class Command(Literal):
 
-    weight = 2
-
-    def parse(self, tokens, prev, end):
+    def parse(self, tokens, prev, head, tail):
         if not tokens:
-            return end.parse(tokens, prev, end)
+            return tail.parse(tokens, prev, head, tail)
         name = tokens.pop(0)
         if name == self.name:
-            cend = CommandEnd('#' + name, self.symbols)
-            cend.options = prev
-            next, _ = Node.parse(self, tokens, self.options, cend)
+            end = CommandEnd('#' + name, self.symbols)
+            end.options = prev
+            next, _ = Node.parse(self, tokens, self.options, self, end)
             self.next.append(next)
-            next, options = Node.parse(cend, tokens, prev, end)
-            cend.next.append(next)
+            # Use None as head... I dunno if it's ever possible to encounter
+            # a case where a command ends and there's a '...' immediately
+            # following it. For good measure, we make it a syntax error...
+            next, options = Node.parse(end, tokens, prev, None, tail)
+            end.next.append(next)
             return self, options
         tokens.insert(0, name)
         return None
@@ -268,42 +299,30 @@ class Command(Literal):
         Node.build(self, [[]] + used)
 
 
-class CommandEnd(Node):
+class CommandEnd(Epsilon):
 
     def build(self, used):
-        used = used[1:]
-        if len(used) < 1 or set(used[0]) - set(self.options):
-            return
-        self._build_options(used)
-        if set(used[0]) ^ set(self.options):
-            return
-        self._build_nodes(used)
+        Node.build(self, used[1:])
 
-    def parse(self, tokens, prev, end):
+    def parse(self, tokens, prev, head, tail):
         return self, []
-
-    def collapse(self):
-        return [node for f in self.follow for node in f.collapse()]
 
 
 class Option(Literal):
 
-    weight = 2
-
-    def parse(self, tokens, prev, end):
+    def parse(self, tokens, prev, head, tail):
         if not tokens:
-            return end.parse(tokens, prev, end)
+            return tail.parse(tokens, prev, head, tail)
         name = tokens.pop(0)
         if name == self.name:
             prev.append(self)
-            return Node.parse(self, tokens, prev, end)
+            next, opts = Node.parse(self, tokens, prev, self, tail)
+            return next, opts + [self]
         tokens.insert(0, name)
         return None
 
 
 class Terminus(CommandEnd):
-
-    weight = 3
 
     def collapse(self):
         if self.follow:  # stuff follows this "Terminus"
@@ -316,13 +335,13 @@ class Terminus(CommandEnd):
 
 class Beginning(Command):
 
-    weight = 3
-
     def match(self, tokens):
         return Node.match(self, tokens)
 
-    def parse(self, tokens, prev, end):
-        next, options = Node.parse(self, tokens, self.options, end.copy())
+    def parse(self, tokens, prev, head, tail):
+        copy = tail.copy()
+        # '...' as the first token is a syntax error.
+        next, options = Node.parse(self, tokens, self.options, None, copy)
         self.next.append(next)
         return self, options
 
@@ -333,17 +352,12 @@ class Parser(object):
     DOLLAR_TOKEN = Token('$', '$', 0, 0)
 
     def __init__(self):
-        self.caret = Beginning(self.CARET_TOKEN, {})
-        self.dollar = Terminus(self.DOLLAR_TOKEN, {})
         self.schema = []
 
-    def __call__(self, *args):
-        for tokens in args[:-1]:
-            self.caret.parse(tokens, [], self.dollar)
-        self.caret.build([])
-        self.caret.collapse()
-        print(self.caret)
-        return self.caret.match(args[-1])
+    def __call__(self, doc, args=None):
+        if args is None:
+            args = sys.argv[1:]
+        return self._to_nfa(doc).match(args)
 
     def __enter__(self):
         self.schema.insert(0, [])
@@ -353,15 +367,92 @@ class Parser(object):
         self.schema.pop(0)
         return False  # allow the propagation of exceptions
 
+    def _to_nfa(self, doc):
+        lexer = Lexer(doc)
+        caret = Beginning(self.CARET_TOKEN, {})
+        dollar = Terminus(self.DOLLAR_TOKEN, {})
+        try:
+            for tokens in lexer:
+                caret.parse(tokens, [], None, dollar)
+        except DocoptLanguageError as e:
+            raise DocoptExit(e.message)
+        caret.build([])
+        caret.collapse()
+        print caret
+        return caret
+
     def validate(self, tokens):
         def decorator(fun):
             self.schema.append((tokens, fun))
             return fun
         return decorator
 
+    def compile(self, doc, target=None, lang=None):
+        if not target or not lang:
+            return
+
+
+class Lexer(object):
+
+    usage_regex = re.compile(r'(usage:)', re.I)
+    emptyline_regex = re.compile(r'\n[\s^\n]*\n')
+    spacing_regex = re.compile('([\[\]\(\)\|]|\.\.\.)')
+
+    def __init__(self, source):
+        self.source = source
+        self.usage, self.lineno = self.get_usage(source)
+        self.tokens = self.lex(self.usage)
+
+    def __iter__(self):
+        for stream in self.tokens:
+            yield stream
+        raise StopIteration()
+
+    def get_usage(self, source):
+        indent = min(len(line) - len(line.strip())
+                     for line in source.split('\n')[1:] if line.strip())
+        source = '\n'.join(line[indent:] for line in source.split('\n'))
+        ure = self.usage_regex
+        elre = self.emptyline_regex
+        try:
+            before, usage, patterns = ure.split(source, maxsplit=1)
+        except:
+            self.error('No usage pattern found.')
+        patterns = elre.split(patterns, maxsplit=1)[0]
+        return usage + patterns.rstrip(), before.count('\n')
+
+    def lex(self, usage):
+        spaced = usage.split(None, 1)[1]
+        spaced = self.spacing_regex.sub(r' \1 ', spaced)
+        lines, patterns = spaced.split('\n'), usage.split('\n')
+        tok = []
+        lineno_offset = self.lineno
+        while not lines[0].strip():
+            lines = lines[1:]
+            patterns = patterns[1:]
+            lineno_offset += 1
+        for index, pair in enumerate(zip(lines, patterns)):
+            tok.append([])
+            line, pattern = pair
+            parts = line.split()
+            offset = 0
+            for part in parts:
+                pos = pattern[offset:].find(part)
+                lineno = lineno_offset + index
+                tok[-1].append(Token(part, pattern,  lineno, offset + pos))
+                offset += pos + len(part)
+        program = tok[0][0].value
+        breaks = [i for i, line in enumerate(tok) if line[0] == program]
+        return [sum(tok[i:j], [])[1:]
+                for i, j in zip(breaks, breaks[1:] + [None])]
+
+    def error(self, message):
+        raise DocoptLanguageError(message)
+
 
 docopt = Parser()
+test = '''
+       Usage: prog x (1|2)
+       '''
 if __name__ == '__main__':
-    print(docopt(Token.ize('y -y <y> x <x>'),
-                 Token.ize('y <y> x <x>'),
-                 ['y', 1, 'x', 2, '-y']))
+    print docopt(test, 'x 2'.split())

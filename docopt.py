@@ -145,16 +145,15 @@ class Node(object):
 
     def _build_nodes(self, used, allowed):
         required = set(opt for opt in allowed if opt.required)
-        skip_ends = required - set(used[0])
         for node in self.next:
-            if isinstance(node, CommandEnd) and skip_ends:
+            if isinstance(node, CommandEnd) and required - set(used[0]):
                 continue
-            if node.built:
-                self.follow.append(node)
-                continue
-            copy = node.copy()
-            copy.build(used, allowed)
-            self.follow.append(copy)
+            #if node.built:
+            #    self.follow.append(node)
+            #    continue
+            #copy = node.copy()
+            node.build(used, allowed)
+            self.follow.append(node)
 
     def collapse(self):
         if not self.collapsed:
@@ -174,7 +173,6 @@ class Node(object):
             copied = {}
         if id(self) in copied:
             return copied[id(self)]
-        print self.name, id(self)
         copy = self.__class__(self.name, self.symbols)
         copied[id(self)] = copy
         copy.next = [node.copy(copied) for node in self.next]
@@ -214,7 +212,7 @@ class Node(object):
         cl = '<%x>' % id(self.options)
         if self.repred < 4:
             self.repred += 1
-            items = self.follow or self.next
+            items = self.follow  # or self.next
             if items:
                 nexts = '\n  '.join('\n  '.join(repr(node).split('\n'))
                                     for node in items)
@@ -231,7 +229,7 @@ class Epsilon(Node):
         if not self.collapsed:
             self.collapsed = True
             return [node for f in self.follow for node in f.collapse()]
-        return []
+        return self.follow
 
     def build(self, used, allowed):
         allowed = [option for option in allowed if option in self.options]
@@ -292,13 +290,15 @@ class Command(Literal):
             return tail.parse(tokens, prev, head, tail)
         name = tokens.pop(0)
         if name == self.name:
-            end = CommandEnd('#' + name, self.symbols)
-            end.options = prev
-            next, _ = Node.parse(self, tokens, self.options, self, end)
+            start = Epsilon('^' + name, self.symbols)
+            end = CommandEnd('$' + name, self.symbols)
+            start.options = end.options = prev
+            start.next.append(self)
+            next, _ = Node.parse(start, tokens, self.options, self, end)
             self.next.append(next)
             next, options = Node.parse(end, tokens, prev, None, tail)
             end.next.append(next)
-            return self, options
+            return start, options
         tokens.insert(0, name)
         return None
 
@@ -390,11 +390,8 @@ class Parser(object):
         dollar = Terminus(self.DOLLAR_TOKEN, {})
         for tokens in lexer:
             caret.parse(tokens, [], None, dollar)
-        try:
-            caret.build([], None)
-            caret.collapse()
-        except RuntimeError:
-            pass
+        caret.build([], None)
+        caret.collapse()
         return caret
 
     def validate(self, tokens):
